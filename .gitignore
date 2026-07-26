@@ -1,0 +1,9 @@
+__pycache__/
+*.egg-info/
+.venv/
+output/*
+!output/.gitkeep
+target/
+.idea/
+.DS_Store
+MODERNIZATION_PLAN.md
