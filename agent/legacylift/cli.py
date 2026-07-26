@@ -51,7 +51,7 @@ def generate(legacy_dir, plan, out):
         f"# MODERNIZATION PLAN\n{plan_text}\n\n# LEGACY SOURCE\n{corpus}",
     )
     n = 0
-    for m in re.finditer(r"===FILE: (.+?)===\n(.*?)(?====FILE: |\Z)", raw, re.S):
+    for m in re.finditer(r"===FILE: (.+?)===\n(.*?)(?====FILE: |\Z)", raw, re.DOTALL):
         rel, content = m.group(1).strip(), m.group(2).strip() + "\n"
         dest = Path(out) / rel
         dest.parent.mkdir(parents=True, exist_ok=True)

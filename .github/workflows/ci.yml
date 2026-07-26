@@ -5,8 +5,8 @@ jobs:
   agent-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
-      - run: pip install -e ./agent ruff
+      - run: pip install -e ./agent ruff==0.16.0
       - run: ruff check agent
