@@ -36,7 +36,7 @@ def analyze(legacy_dir, out):
     """Read legacy source and write a modernization plan."""
     corpus = collect_sources(legacy_dir)
     plan = _ask(prompts.ANALYZE_SYSTEM, corpus)
-    Path(out).write_text(plan)
+    Path(out).write_text(plan, encoding="utf-8")
     click.echo(f"wrote {out}")
 
 
@@ -47,7 +47,7 @@ def analyze(legacy_dir, out):
 def generate(legacy_dir, plan, out):
     """Generate a Spring Boot service from the plan + legacy source."""
     corpus = collect_sources(legacy_dir)
-    plan_text = Path(plan).read_text()
+    plan_text = Path(plan).read_text(encoding="utf-8")
     raw = _ask(
         prompts.GENERATE_SYSTEM,
         f"# MODERNIZATION PLAN\n{plan_text}\n\n# LEGACY SOURCE\n{corpus}",
@@ -57,7 +57,7 @@ def generate(legacy_dir, plan, out):
         rel, content = m.group(1).strip(), m.group(2).strip() + "\n"
         dest = Path(out) / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
+        dest.write_text(content, encoding="utf-8")
         n += 1
     click.echo(f"wrote {n} files to {out}")
     click.echo("next: cd there and run  mvn verify  (tests + PIT gate)")

@@ -9,7 +9,7 @@ def collect_sources(root: str) -> str:
     parts, total = [], 0
     for p in sorted(Path(root).rglob("*")):
         if p.suffix in SOURCE_EXTS and p.is_file():
-            text = p.read_text(errors="replace")
+            text = p.read_text(encoding="utf-8", errors="replace")
             total += len(text)
             if total > MAX_BYTES:
                 parts.append(f"// TRUNCATED: corpus exceeded {MAX_BYTES} bytes")
