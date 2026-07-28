@@ -3,23 +3,25 @@ import re
 from pathlib import Path
 
 import click
-from anthropic import Anthropic
+from openai import OpenAI
 
 from . import prompts
 from .analyzer import collect_sources
 
-MODEL = "claude-sonnet-5"
+MODEL = "gpt-5"
 
 
 def _ask(system: str, user: str) -> str:
-    client = Anthropic()
-    msg = client.messages.create(
+    client = OpenAI()
+    resp = client.chat.completions.create(
         model=MODEL,
-        max_tokens=16000,
-        system=system,
-        messages=[{"role": "user", "content": user}],
+        max_completion_tokens=16000,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
     )
-    return "".join(b.text for b in msg.content if b.type == "text")
+    return resp.choices[0].message.content or ""
 
 
 @click.group()
