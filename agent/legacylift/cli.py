@@ -54,7 +54,12 @@ def generate(legacy_dir, plan, out):
     )
     n = 0
     for m in re.finditer(r"===FILE: (.+?)===\n(.*?)(?====FILE: |\Z)", raw, re.DOTALL):
-        rel, content = m.group(1).strip(), m.group(2).strip() + "\n"
+        rel, content = m.group(1).strip(), m.group(2).strip()
+        # The model sometimes wraps a file in a markdown code fence; strip a
+        # leading ```lang line and a trailing ``` so they don't reach disk.
+        content = re.sub(r"\A```[^\n]*\n", "", content)
+        content = re.sub(r"\n```\s*\Z", "", content)
+        content = content.strip() + "\n"
         dest = Path(out) / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
