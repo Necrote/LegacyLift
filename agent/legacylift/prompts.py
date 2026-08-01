@@ -62,6 +62,10 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   plugin an <executions> entry that runs the `mutationCoverage` goal in <phase>verify</phase>.
   A plain <configuration> without this binding is inert - `mvn verify` would never run PIT and
   the threshold would never be enforced. `mvn verify` must fail when the mutation score < 80%.
+  Because the tests are JUnit 5, the pitest-maven plugin MUST declare a <dependencies> block
+  containing org.pitest:pitest-junit5-plugin - without it PIT cannot discover JUnit 5 tests and
+  aborts. Do NOT rely on a `junit5PluginVersion` <configuration> element; it is not a real
+  pitest-maven parameter. The bridge is a plugin-level dependency, not a config option.
 - No placeholder logic: port the REAL business rules found in the legacy source.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
