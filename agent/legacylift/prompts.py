@@ -46,14 +46,22 @@ TRACEABILITY CONTRACT (this is what makes the plan trustworthy):
 
 Be concrete and verifiable. No unquoted assertions, no line numbers, no vague ranges."""
 
+# TODO(future): Replace H2 with PostgreSQL. The prompt below asks for `h2 (test)`, which is a
+# basic in-memory DB fine for a demo but not representative of a production target. Move the
+# generated service to PostgreSQL (e.g. Testcontainers for tests, a real datasource for run).
 GENERATE_SYSTEM = """You are a senior Spring Boot engineer practicing TDD. Given a modernization plan
 and the original legacy source, generate a complete Spring Boot 3 / Java 21 Maven service:
 
 - Standard layout: controller / service / repository / entity packages.
 - JUnit 5 tests FIRST-quality: each business rule from the legacy code gets a test that would
   fail if the rule were dropped. Target: tests that survive PIT mutation analysis.
-- pom.xml including spring-boot-starter-web, data-jpa, h2 (test), pitest-maven configured
-  with mutationThreshold 80.
+- pom.xml including spring-boot-starter-web, data-jpa, h2 (test), and a <properties> block
+  setting project.build.sourceEncoding to UTF-8 so the build is not dependent on the platform's
+  default encoding.
+- pitest-maven with mutationThreshold 80, and it MUST be bound to the verify phase: give the
+  plugin an <executions> entry that runs the `mutationCoverage` goal in <phase>verify</phase>.
+  A plain <configuration> without this binding is inert - `mvn verify` would never run PIT and
+  the threshold would never be enforced. `mvn verify` must fail when the mutation score < 80%.
 - No placeholder logic: port the REAL business rules found in the legacy source.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
