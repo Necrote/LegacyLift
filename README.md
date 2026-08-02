@@ -21,6 +21,16 @@ legacy code ──► [1] ANALYZE ──► MODERNIZATION_PLAN.md   (service bou
 The agent never ships code that hasn't passed the same gates a human engineer's code would:
 compile, unit tests green, **80%+ PIT mutation score**.
 
+## Quick start
+
+```bash
+cd agent
+pip install -e .
+export OPENAI_API_KEY=sk-... OR  $env:OPENAI_API_KEY = "sk..."
+legacylift analyze ../samples/legacy-inventory        # produces MODERNIZATION_PLAN.md
+legacylift generate ../samples/legacy-inventory -o ../output/inventory-service
+```
+
 ## Why the quality gates matter
 
 LLMs generate plausible code; mutation testing proves the *tests* actually constrain behavior.
