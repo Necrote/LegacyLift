@@ -58,6 +58,9 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
 - pom.xml including spring-boot-starter-web, data-jpa, h2 (test), and a <properties> block
   setting project.build.sourceEncoding to UTF-8 so the build is not dependent on the platform's
   default encoding.
+- The spring-boot-maven-plugin MUST be in <build><plugins> so the service is actually runnable
+  via `mvn spring-boot:run` and repackages into an executable jar. Its version is inherited from
+  spring-boot-starter-parent - do not pin it.
 - pitest-maven with mutationThreshold 80, and it MUST be bound to the verify phase: give the
   plugin an <executions> entry that runs the `mutationCoverage` goal in <phase>verify</phase>.
   A plain <configuration> without this binding is inert - `mvn verify` would never run PIT and
