@@ -54,7 +54,15 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
 
 - Standard layout: controller / service / repository / entity packages.
 - JUnit 5 tests FIRST-quality: each business rule from the legacy code gets a test that would
-  fail if the rule were dropped. Target: tests that survive PIT mutation analysis.
+  fail if the rule were dropped, and each rule test must pin the exact threshold BOUNDARIES
+  (e.g. assert at 99 and 100, and at 499 and 500 - not just a mid-range value) so no
+  changed-conditional-boundary mutation can survive.
+- PIT mutates EVERY class you emit, not only the business logic, and the build fails below 80%.
+  So do not create untested surface area: (a) do NOT emit gratuitous boilerplate - no
+  equals/hashCode/toString on entities or DTOs (a @Id-keyed JPA entity does not need them; omit
+  them) unless a test kills their mutations; (b) every other public method you write - controller
+  endpoints, exception handlers, mappers - must have a test asserting its return value/behavior,
+  or its mutations survive and sink the score. Aim comfortably above 80%, not exactly at it.
 - pom.xml including spring-boot-starter-web, data-jpa, h2 (test), and a <properties> block
   setting project.build.sourceEncoding to UTF-8 so the build is not dependent on the platform's
   default encoding.
