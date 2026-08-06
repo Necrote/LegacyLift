@@ -77,6 +77,31 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   containing org.pitest:pitest-junit5-plugin - without it PIT cannot discover JUnit 5 tests and
   aborts. Do NOT rely on a `junit5PluginVersion` <configuration> element; it is not a real
   pitest-maven parameter. The bridge is a plugin-level dependency, not a config option.
+- EVERYTHING YOU EMIT MUST COMPILE. A test that does not compile fails the build at test-compile,
+  before PIT ever runs - a compile error bypasses the mutation gate entirely, so the 80% threshold
+  cannot protect you from one. Only call methods that actually exist on the receiver's type:
+  - AssertJ's comparison assertions (isGreaterThan, isLessThan, isGreaterThanOrEqualTo, isBetween)
+    exist only on its Comparable/number asserts. Passing an arbitrary object to assertThat() gives
+    you an ObjectAssert, which does NOT have them; that is a compile error, not a test failure.
+  - Concretely: ch.qos.logback.classic.Level does NOT implement Comparable. NEVER write
+    `assertThat(event.getLevel()).isGreaterThanOrEqualTo(Level.WARN)` - it does not compile. Compare
+    levels with == inside a predicate and assert the resulting boolean instead, e.g.
+    `assertThat(events.stream().anyMatch(e -> e.getLevel() == Level.WARN
+        && e.getFormattedMessage().contains("..."))).isTrue();`
+    Assert the exact level the code logs at, not a range - an exact match also kills the mutation
+    that swaps the log level.
+  - To capture log output, use logback's built-in ch.qos.logback.core.read.ListAppender<ILoggingEvent>
+    and read its `list` field. Do NOT hand-write an AppenderBase subclass: it is extra emitted surface
+    that PIT will mutate and that you would then have to write tests for.
+- Tests may only assert behavior that the main code you emit actually implements. A runtime exception
+  thrown by a service does NOT become a 500 response under @WebMvcTest/MockMvc - it propagates out and
+  the test errors instead of passing. So if you write a test expecting a 5xx, you MUST also emit the
+  @RestControllerAdvice + @ExceptionHandler that produces it, and the test must throw the exact
+  exception type that handler catches. Do NOT write an @ExceptionHandler for RuntimeException or
+  Exception: @ExceptionHandler methods are resolved before Spring's ResponseStatusExceptionResolver,
+  so a broad handler also swallows ResponseStatusException and silently turns your intended 404/400
+  responses into 500s. Catch a specific type (e.g. DataAccessException). Assert BOTH the handler's
+  status and its response body, or the body-string mutation survives and costs you score.
 - No placeholder logic: port the REAL business rules found in the legacy source.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
