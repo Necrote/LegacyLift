@@ -6,8 +6,17 @@ MAX_BYTES = 400_000  # keep context sane
 
 
 def collect_sources(root: str) -> str:
+    # rglob on a missing path yields nothing rather than raising, so without this check a
+    # wrong working directory looks identical to a directory full of unsupported files.
+    # These paths are typically relative to the repo root; say so instead of blaming the tree.
+    base = Path(root)
+    if not base.is_dir():
+        raise SystemExit(
+            f"{root} is not a directory (resolved to {base.resolve()}).\n"
+            f"Paths are relative to the current directory - run this from the repo root."
+        )
     parts, total = [], 0
-    for p in sorted(Path(root).rglob("*")):
+    for p in sorted(base.rglob("*")):
         if p.suffix in SOURCE_EXTS and p.is_file():
             text = p.read_text(encoding="utf-8", errors="replace")
             total += len(text)
@@ -16,5 +25,8 @@ def collect_sources(root: str) -> str:
                 break
             parts.append(f"// ===== {p.relative_to(root)} =====\n{text}")
     if not parts:
-        raise SystemExit(f"No legacy source files found under {root}")
+        raise SystemExit(
+            f"No legacy source files found under {root} - the directory exists but holds "
+            f"nothing with a supported extension ({' '.join(sorted(SOURCE_EXTS))})."
+        )
     return "\n\n".join(parts)
