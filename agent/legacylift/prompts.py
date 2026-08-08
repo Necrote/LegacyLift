@@ -75,8 +75,61 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   the threshold would never be enforced. `mvn verify` must fail when the mutation score < 80%.
   Because the tests are JUnit 5, the pitest-maven plugin MUST declare a <dependencies> block
   containing org.pitest:pitest-junit5-plugin - without it PIT cannot discover JUnit 5 tests and
-  aborts. Do NOT rely on a `junit5PluginVersion` <configuration> element; it is not a real
-  pitest-maven parameter. The bridge is a plugin-level dependency, not a config option.
+  aborts. The bridge is that plugin-level dependency and nothing else: do NOT add any junit5
+  <configuration> element (`junit5Plugin`, `junit5PluginVersion`, ...). No such pitest-maven
+  parameter exists; Maven warns "Parameter 'junit5Plugin' is unknown for plugin pitest-maven"
+  and the element does nothing.
+- EVERYTHING YOU EMIT MUST COMPILE. A test that does not compile fails the build at test-compile,
+  before PIT ever runs - a compile error bypasses the mutation gate entirely, so the 80% threshold
+  cannot protect you from one.
+  - `import static` is ONLY for static MEMBERS (methods, fields, enum constants) of a named type:
+    `import static org.mockito.BDDMockito.given;`. A TYPE - class, interface, ANNOTATION - always
+    takes a plain `import`. `import static ...mockito.MockBean;` never compiles: javac reads the
+    second-to-last segment as the enclosing type and reports the nonsense error "package
+    org.springframework.boot.test.mock does not exist", which looks like a missing dependency but
+    is not. Before you emit an `import static`, name the type it reads the member from; if the
+    last segment is the type itself, drop the `static`. Annotations you apply with `@` - @MockBean,
+    @MockitoBean, @Test, @WebMvcTest - are types, so NONE of them is ever a static import.
+  - A real class name in the WRONG package is still `cannot find symbol`, and Spring scatters the
+    exceptions an @ExceptionHandler catches across four packages - `org.springframework.web.bind`
+    is a decoy that holds some of them but NOT the one most often wanted. Copy these exactly:
+      org.springframework.web.method.annotation.MethodArgumentTypeMismatchException
+      org.springframework.web.bind.MethodArgumentNotValidException
+      org.springframework.web.bind.MissingServletRequestParameterException
+      org.springframework.http.converter.HttpMessageNotReadableException
+      org.springframework.web.server.ResponseStatusException
+      org.springframework.web.servlet.NoHandlerFoundException
+      org.springframework.web.HttpRequestMethodNotSupportedException
+    If you want to import a Spring type that is NOT on this list and you are not certain of its
+    package, do not guess - restructure so you do not need it (e.g. validate the input yourself and
+    throw your own exception from the service, which you also emit and therefore control).
+  - Match the mock-bean annotation to the Spring Boot version in your pom: `@MockBean`
+    (org.springframework.boot.test.mock.mockito) for Boot <= 3.3, `@MockitoBean`
+    (org.springframework.test.context.bean.override.mockito) for Boot >= 3.4, where @MockBean is
+    deprecated. Never mix one version's annotation with the other's package.
+  Only call methods that actually exist on the receiver's type:
+  - AssertJ's comparison assertions (isGreaterThan, isLessThan, isGreaterThanOrEqualTo, isBetween)
+    exist only on its Comparable/number asserts. Passing an arbitrary object to assertThat() gives
+    you an ObjectAssert, which does NOT have them; that is a compile error, not a test failure.
+  - Concretely: ch.qos.logback.classic.Level does NOT implement Comparable. NEVER write
+    `assertThat(event.getLevel()).isGreaterThanOrEqualTo(Level.WARN)` - it does not compile. Compare
+    levels with == inside a predicate and assert the resulting boolean instead, e.g.
+    `assertThat(events.stream().anyMatch(e -> e.getLevel() == Level.WARN
+        && e.getFormattedMessage().contains("..."))).isTrue();`
+    Assert the exact level the code logs at, not a range - an exact match also kills the mutation
+    that swaps the log level.
+  - To capture log output, use logback's built-in ch.qos.logback.core.read.ListAppender<ILoggingEvent>
+    and read its `list` field. Do NOT hand-write an AppenderBase subclass: it is extra emitted surface
+    that PIT will mutate and that you would then have to write tests for.
+- Tests may only assert behavior that the main code you emit actually implements. A runtime exception
+  thrown by a service does NOT become a 500 response under @WebMvcTest/MockMvc - it propagates out and
+  the test errors instead of passing. So if you write a test expecting a 5xx, you MUST also emit the
+  @RestControllerAdvice + @ExceptionHandler that produces it, and the test must throw the exact
+  exception type that handler catches. Do NOT write an @ExceptionHandler for RuntimeException or
+  Exception: @ExceptionHandler methods are resolved before Spring's ResponseStatusExceptionResolver,
+  so a broad handler also swallows ResponseStatusException and silently turns your intended 404/400
+  responses into 500s. Catch a specific type (e.g. DataAccessException). Assert BOTH the handler's
+  status and its response body, or the body-string mutation survives and costs you score.
 - No placeholder logic: port the REAL business rules found in the legacy source.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
