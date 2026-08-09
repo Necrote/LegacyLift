@@ -37,11 +37,26 @@ Run the three-stage pipeline against the bundled sample:
 ```bash
 legacylift analyze  ../samples/legacy-inventory                          # -> MODERNIZATION_PLAN.md
 legacylift generate ../samples/legacy-inventory -o ../output/inventory-service
-cd ../output/inventory-service && mvn verify                             # compile + JUnit + PIT >=80% gate
+legacylift verify   ../output/inventory-service                          # compile + JUnit + PIT >=80% gate
 ```
 
-`mvn verify` is the quality gate: it compiles, runs the JUnit tests, and **fails the build if the
-PIT mutation score drops below 80%**.
+`verify` is the quality gate: it runs `mvn verify` — compile, JUnit tests, then PIT — and **fails
+if the mutation score drops below 80%**. When the build fails it doesn't just report; it feeds the
+Maven errors back to the agent, applies the fix, and re-runs, **capped at 3 attempts**:
+
+```
+$ legacylift verify output/inventory-service
+  mvn verify FAILED (exit 1, compile): InventoryControllerTest.java:[7,49] package org.springframework.boot.test.mock does not exist
+  fix attempt 1/3: asking gpt-5 ...
+  rewrote 1 file(s): src/test/java/com/acme/inventory/controller/InventoryControllerTest.java
+VERIFIED after 1 fix attempt(s) - mvn verify green, PIT gate held.
+```
+
+The loop is not allowed to cheat its way to green. A proposed fix that lowers `mutationThreshold`,
+unbinds pitest from the verify phase, or `@Disabled`s a test is **rejected before it is written** —
+the gate is the product, so a "fix" that removes it is discarded. Every rewritten file is backed up
+under `.legacylift/attempt-N/`, and each run appends to `.legacylift/verify.log`. If 3 attempts
+aren't enough, it says so and exits non-zero rather than claiming success.
 
 ## Run the generated service (demo)
 
@@ -82,14 +97,16 @@ also generated at `GET /api/v1/inventory?sku=...&orderQty=N`.
 - **Tests proven to constrain, not just cover** — deleting each business rule turns a specific test
   red (manual mutation check).
 - **Runnable service + live curl demo** — see above.
+- **Automated fix loop** — `legacylift verify` takes generated code to verified code unattended:
+  classifies the failure (compile / test / mutation), sends a filtered Maven excerpt plus the
+  current source back to the agent, applies the fix, re-runs, capped at 3 attempts — with fixes
+  that weaken the mutation gate rejected before they reach disk.
 
 **Week 2 — next**
 
 - **Replace H2 with PostgreSQL** — Testcontainers for tests, a real datasource for run.
 - **Runnable out of the box** — auto-configured datasource + an optional seed profile, so the
   runtime-H2 and demo-seed steps above aren't manual.
-- **Automated fix loop** — feed `mvn` compile/verify errors back to the agent automatically instead
-  of by hand.
 
 ## Why the quality gates matter
 

@@ -4,6 +4,7 @@ __pycache__/
 output/*
 !output/.gitkeep
 target/
+.legacylift/
 .idea/
 .DS_Store
 MODERNIZATION_PLAN.md

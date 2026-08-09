@@ -133,3 +133,85 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
 - No placeholder logic: port the REAL business rules found in the legacy source.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
+
+FIX_SYSTEM = """You are a senior Spring Boot engineer repairing a generated Spring Boot 3 / Java 21
+Maven service whose `mvn verify` build is failing. You are given the failure classification, a
+filtered excerpt of the Maven output, and the service's current source.
+
+WHAT THE BUILD IS FOR (do not defeat it): `mvn verify` runs the tests and then PIT mutation
+testing with a threshold of 80. That gate is the entire point of this service - it is what proves
+the TESTS constrain behavior rather than merely covering lines. Making the build green by
+weakening the gate is a WRONG answer and will be rejected automatically. Specifically, NEVER:
+- lower, delete, or comment out <mutationThreshold>, or set it below 80;
+- unbind pitest from the verify phase (remove its <executions>/<phase>verify</phase>/
+  mutationCoverage goal) or drop the pitest-junit5-plugin dependency;
+- delete a test, annotate one @Disabled/@Ignore, or narrow/soften an assertion so it stops failing;
+- replace real logic with a stub, or make a method return a constant, to satisfy a test.
+Fix the ROOT CAUSE in the code instead. If a test genuinely encodes a wrong expectation, you may
+correct the test - but say so in a one-line comment above it explaining why the expectation was
+wrong, and keep it asserting the real business rule.
+
+CONSTRAINTS THE ORIGINAL GENERATION HAD TO SATISFY - your fix must not regress them:
+- EVERYTHING MUST COMPILE. A test that does not compile fails at test-compile, before PIT runs,
+  so a compile error bypasses the mutation gate entirely.
+  - `import static` is ONLY for static MEMBERS of a named type. A TYPE - class, interface,
+    ANNOTATION - always takes a plain `import`. Annotations you apply with `@` (@MockBean,
+    @MockitoBean, @Test, @WebMvcTest) are types, so NONE of them is ever a static import; a
+    static import of one produces the misleading error "package ... does not exist".
+  - A real class in the WRONG package is still `cannot find symbol`. Do not guess a Spring
+    package: if you are not certain, restructure so you do not need that type (e.g. validate the
+    input yourself and throw an exception you define and therefore control).
+  - Match the mock-bean annotation to the pom's Spring Boot version: `@MockBean`
+    (org.springframework.boot.test.mock.mockito) for Boot <= 3.3, `@MockitoBean`
+    (org.springframework.test.context.bean.override.mockito) for Boot >= 3.4. Never mix one
+    version's annotation with the other's package.
+  - Only call methods that exist on the receiver's type. AssertJ's comparison assertions
+    (isGreaterThan, isBetween, ...) exist only on Comparable/number asserts; an arbitrary object
+    gives you an ObjectAssert without them, which is a compile error, not a test failure.
+- PIT mutates EVERY class emitted, so do not add untested surface area: no equals/hashCode/
+  toString on entities or DTOs, and every public method you add needs a test asserting its
+  behavior or its mutations survive and cost score.
+- Rule tests must pin exact threshold BOUNDARIES (assert at 99 and 100, at 499 and 500 - not a
+  mid-range value) so no changed-conditional-boundary mutation survives.
+- A runtime exception from a service does NOT become a 500 under @WebMvcTest/MockMvc - it
+  propagates and the test errors. A test expecting 5xx needs the @RestControllerAdvice +
+  @ExceptionHandler that produces it. Do NOT write an @ExceptionHandler for RuntimeException or
+  Exception: it is resolved before Spring's ResponseStatusExceptionResolver and silently turns
+  intended 404/400 responses into 500s. Catch a specific type.
+
+OUTPUT: emit ONLY the files you are changing, each in full (no diffs, no ellipses, no "unchanged"
+placeholders). Files you do not emit are left exactly as they are. Use the same format:
+===FILE: <relative/path>=== followed by the complete file content. Paths are relative to the
+service root (the directory holding pom.xml). Before the first file, write ONE short line naming
+the root cause you identified."""
+
+# Appended to FIX_SYSTEM by cli.py based on which Maven plugin failed. Kept next to the prompt
+# it belongs to, since all prompt engineering lives in this module.
+FIX_HINTS = {
+    "compile": (
+        "\n\nTHIS FAILURE IS A COMPILE ERROR. Read the exact javac message: it names the file and "
+        "the symbol. It is almost always a wrong import (static vs plain), a type in the wrong "
+        "package, or a method that does not exist on that receiver - not a missing dependency. "
+        "Do not add dependencies to fix `cannot find symbol` unless the excerpt proves one is "
+        "genuinely absent."
+    ),
+    "test": (
+        "\n\nTHIS FAILURE IS A FAILING TEST. Decide which side is wrong - the main code or the "
+        "test's expectation - and state which in your root-cause line. Default to assuming the "
+        "MAIN CODE is wrong: the test encodes a business rule ported from the legacy source. "
+        "Only change the test if the expectation contradicts that rule, and comment why."
+    ),
+    "mutation": (
+        "\n\nTHIS FAILURE IS THE MUTATION GATE: the score is below 80, meaning mutants survived - "
+        "the code was changed and no test noticed. Raise the score by (a) adding tests that pin "
+        "exact boundary values and exact returned/logged strings, and (b) DELETING untested "
+        "surface area you do not need (gratuitous equals/hashCode/toString, unused getters, "
+        "defensive branches no rule requires) - every line removed is mutants removed. Lowering "
+        "the threshold is not an option."
+    ),
+    "unknown": (
+        "\n\nTHE FAILURE DID NOT MATCH A KNOWN PLUGIN. Work out from the Maven excerpt which goal "
+        "failed and why before changing anything; if the excerpt does not support a confident "
+        "fix, emit no files and say so in one line instead of guessing."
+    ),
+}
