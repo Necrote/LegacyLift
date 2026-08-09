@@ -58,6 +58,21 @@ the gate is the product, so a "fix" that removes it is discarded. Every rewritte
 under `.legacylift/attempt-N/`, and each run appends to `.legacylift/verify.log`. If 3 attempts
 aren't enough, it says so and exits non-zero rather than claiming success.
 
+## Configuration
+
+Every tunable — model, token cap, corpus size limit, command defaults, Maven timeout — lives in
+`agent/legacylift/config.py`, and each one can be overridden for a single run with a
+`LEGACYLIFT_*` environment variable:
+
+```bash
+LEGACYLIFT_MODEL=gpt-5-mini legacylift generate samples/legacy-inventory
+LEGACYLIFT_MAX_ITERATIONS=5 legacylift verify output/inventory-service
+```
+
+The mutation-gate invariants (the 80% floor, the Maven arg list) are deliberately **not**
+overridable — an env var that could set the threshold to 0, or slip in `-DskipTests`, would
+disable the quality gate from outside the process. Those change only by editing the file.
+
 ## Run the generated service (demo)
 
 The generated service is a runnable Spring Boot app (its pom includes `spring-boot-maven-plugin`).

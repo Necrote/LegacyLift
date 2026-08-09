@@ -8,21 +8,14 @@ import shutil
 import subprocess
 from pathlib import Path
 
-MVN_ARGS = ["-B", "--no-transfer-progress", "verify"]
-DEFAULT_TIMEOUT = 900  # PIT on even a small service is minutes, not seconds
-TIMEOUT_RC = 124  # conventional shell exit code for a killed-on-timeout command
-TAIL_LINES = 40
-MAX_EXCERPT = 24_000
-
-# The mutation gate is the reason this project exists (see CLAUDE.md). An LLM told to
-# "make the build pass" can always do so by taking the gate apart, so fixes are checked
-# against this floor before they are allowed anywhere near the disk.
-MIN_MUTATION_THRESHOLD = 80
-
-# Directories inside the generated service that must never be fed back to the model:
-# target/ is ~44 MB of build output (surefire XML alone would blow the corpus cap) and
-# .legacylift/ holds our own backups of earlier attempts.
-SKIP_DIRS = frozenset({"target", ".legacylift"})
+from .config import (
+    EXCERPT_CHARS,
+    EXCERPT_TAIL_LINES,
+    MIN_MUTATION_THRESHOLD,
+    MVN_ARGS,
+    MVN_TIMEOUT,
+    TIMEOUT_RC,
+)
 
 
 def _text(chunk) -> str:
@@ -36,7 +29,7 @@ def preflight(service_dir) -> str:
     """Check the target is buildable and return the mvn to use, or exit saying why not.
 
     Called before anything is written, so pointing verify at the wrong directory does not
-    leave a log or a .legacylift/ behind in it.
+    leave a log or a work directory behind in it.
     """
     base = Path(service_dir)
     if not (base / "pom.xml").is_file():
@@ -55,7 +48,7 @@ def preflight(service_dir) -> str:
     return mvn
 
 
-def run_maven(service_dir, timeout: int = DEFAULT_TIMEOUT) -> tuple[int, str]:
+def run_maven(service_dir, timeout: int = MVN_TIMEOUT) -> tuple[int, str]:
     """Run `mvn verify` in service_dir. Returns (exit code, combined output)."""
     base = Path(service_dir)
     mvn = preflight(base)
@@ -131,11 +124,11 @@ _KEEP = re.compile(
 )
 
 
-def distill(output: str, limit: int = MAX_EXCERPT) -> str:
+def distill(output: str, limit: int = EXCERPT_CHARS) -> str:
     """Cut a full mvn log down to the parts worth paying tokens for."""
     lines = output.splitlines()
     keep = {i for i, line in enumerate(lines) if _KEEP.search(line)}
-    keep |= set(range(max(0, len(lines) - TAIL_LINES), len(lines)))
+    keep |= set(range(max(0, len(lines) - EXCERPT_TAIL_LINES), len(lines)))
     picked, prev = [], None
     for i in sorted(keep):
         if prev is not None and i > prev + 1:

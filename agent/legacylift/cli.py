@@ -8,10 +8,8 @@ from pathlib import Path
 import click
 from openai import OpenAI
 
-from . import prompts, verifier
+from . import config, prompts, verifier
 from .analyzer import collect_sources
-
-MODEL = "gpt-5"
 
 # The delimiter the prompts tell the model to emit and the parser below are one contract:
 # change either and you must change the other.
@@ -54,8 +52,8 @@ def _ask(system: str, user: str) -> str:
         )
     client = OpenAI()
     resp = client.chat.completions.create(
-        model=MODEL,
-        max_completion_tokens=16000,
+        model=config.MODEL,
+        max_completion_tokens=config.MAX_TOKENS,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -71,7 +69,7 @@ def main():
 
 @main.command()
 @click.argument("legacy_dir")
-@click.option("-o", "--out", default="MODERNIZATION_PLAN.md", show_default=True)
+@click.option("-o", "--out", default=config.PLAN_FILE, show_default=True)
 def analyze(legacy_dir, out):
     """Read legacy source and write a modernization plan."""
     corpus = collect_sources(legacy_dir)
@@ -82,8 +80,8 @@ def analyze(legacy_dir, out):
 
 @main.command()
 @click.argument("legacy_dir")
-@click.option("-p", "--plan", default="MODERNIZATION_PLAN.md", show_default=True)
-@click.option("-o", "--out", default="output/service", show_default=True)
+@click.option("-p", "--plan", default=config.PLAN_FILE, show_default=True)
+@click.option("-o", "--out", default=config.OUTPUT_DIR, show_default=True)
 def generate(legacy_dir, plan, out):
     """Generate a Spring Boot service from the plan + legacy source."""
     corpus = collect_sources(legacy_dir)
@@ -105,7 +103,7 @@ def _log(path: Path, text: str) -> None:
 
 def _backup(files, svc: Path, attempt: int) -> Path:
     """Copy the files a fix is about to overwrite, so a bad fix is never the only copy."""
-    root = svc / ".legacylift" / f"attempt-{attempt}"
+    root = svc / config.WORK_DIR / f"attempt-{attempt}"
     for rel in files:
         src = svc / rel
         if src.is_file():
@@ -117,17 +115,17 @@ def _backup(files, svc: Path, attempt: int) -> Path:
 
 @main.command()
 @click.argument("service_dir")
-@click.option("-n", "--max-iterations", default=3, show_default=True,
+@click.option("-n", "--max-iterations", default=config.MAX_ITERATIONS, show_default=True,
               help="Maximum fix attempts; mvn verify runs once more after each.")
 @click.option("--legacy", default=None,
               help="Legacy source dir, included so fixes can consult the original business rules.")
-@click.option("--timeout", default=verifier.DEFAULT_TIMEOUT, show_default=True,
+@click.option("--timeout", default=config.MVN_TIMEOUT, show_default=True,
               help="Seconds to allow one mvn verify run.")
 def verify(service_dir, max_iterations, legacy, timeout):
     """Run mvn verify, feed failures back to the agent, retry (capped)."""
     svc = Path(service_dir)
     verifier.preflight(svc)  # before the log below, so a wrong path leaves nothing behind
-    log = svc / ".legacylift" / "verify.log"
+    log = svc / config.WORK_DIR / config.LOG_NAME
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     _log(log, f"\n===== legacylift verify {service_dir} @ {started} "
               f"(max {max_iterations} fixes) =====")
@@ -144,13 +142,13 @@ def verify(service_dir, max_iterations, legacy, timeout):
         if attempt >= max_iterations:
             break
         attempt += 1
-        click.echo(f"  fix attempt {attempt}/{max_iterations}: asking {MODEL} ...")
+        click.echo(f"  fix attempt {attempt}/{max_iterations}: asking {config.MODEL} ...")
 
         request = [
             f"# BUILD FAILURE ({kind})", why, "",
             "# MAVEN OUTPUT (filtered)", excerpt, "",
             "# CURRENT SERVICE SOURCE",
-            collect_sources(svc, exclude_dirs=verifier.SKIP_DIRS),
+            collect_sources(svc, exclude_dirs=config.SKIP_DIRS),
         ]
         if legacy:
             request += ["", "# ORIGINAL LEGACY SOURCE", collect_sources(legacy)]
@@ -194,7 +192,7 @@ def verify(service_dir, max_iterations, legacy, timeout):
     _log(log, failed)
     click.echo(f"\n{failed}")
     click.echo(f"The last attempt is left in {svc}; earlier versions of each rewritten file are "
-               f"in {svc / '.legacylift'}. Full log: {log}")
+               f"in {svc / config.WORK_DIR}. Full log: {log}")
     raise SystemExit(1)
 
 

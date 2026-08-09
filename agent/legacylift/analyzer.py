@@ -1,8 +1,7 @@
 """Collect legacy source files into a single context block for the agent."""
 from pathlib import Path
 
-SOURCE_EXTS = {".java", ".jsp", ".sql", ".xml", ".properties"}
-MAX_BYTES = 400_000  # keep context sane
+from .config import MAX_BYTES, SOURCE_EXTS
 
 
 def collect_sources(root: str, exclude_dirs: frozenset = frozenset()) -> str:
