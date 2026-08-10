@@ -131,6 +131,39 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   responses into 500s. Catch a specific type (e.g. DataAccessException). Assert BOTH the handler's
   status and its response body, or the body-string mutation survives and costs you score.
 - No placeholder logic: port the REAL business rules found in the legacy source.
+- The service must RUN, not merely build. `java -jar target/*.jar` has to serve the endpoint
+  with no external database and no manual setup, so emit all three of these:
+  - The database dependency (h2) at `<scope>runtime</scope>`, NOT `test`. A test-scoped driver
+    is absent from the packaged jar and the app dies at startup with "Failed to configure a
+    DataSource"; the tests still work at runtime scope, so this costs nothing.
+  - `src/main/resources/application.properties` pointing at an in-memory H2
+    (`spring.datasource.url=jdbc:h2:mem:<name>;DB_CLOSE_DELAY=-1`), with
+    `spring.jpa.hibernate.ddl-auto=create-drop` and
+    `spring.jpa.defer-datasource-initialization=true`. Without that last property the seed
+    below runs BEFORE Hibernate creates the tables and every INSERT fails.
+  - `src/main/resources/data.sql` seeding a few rows drawn from the legacy domain, chosen so
+    each business rule is visible from a single request (e.g. one row above and one row below a
+    reorder threshold). Seed with data.sql ONLY - never a CommandLineRunner, @PostConstruct or
+    other Java seeding component: PIT mutates every class you emit, so a Java seeder is untested
+    surface area that will sink the mutation score. SQL is not mutated.
+- A multi-stage `Dockerfile` plus a `.dockerignore`, so the service runs as a container:
+  - Build stage `FROM maven:3.9-eclipse-temurin-21`: copy `pom.xml` alone and run
+    `mvn -B --no-transfer-progress dependency:go-offline` FIRST, then copy `src` and run
+    `mvn -B --no-transfer-progress package`. Splitting it that way keeps the dependency layer
+    cached across source edits. Use `package`, not `verify`: pitest is bound to `verify`, and a
+    multi-minute mutation run does not belong in every image build. Do NOT pass `-DskipTests` -
+    `package` runs the unit tests and that is intended.
+  - Then `RUN mv target/*.jar /build/app.jar` so the runtime stage needs no artifactId/version.
+    (`*.jar` matches only the boot jar; spring-boot:repackage leaves the pre-repackage copy as
+    `.jar.original`, which the glob does not match.)
+  - Runtime stage `FROM eclipse-temurin:21-jre-alpine` - a JRE, never the JDK or the Maven
+    image. `COPY --from=build --chown=app:app` the jar in, create a non-root user
+    (`addgroup -S app && adduser -S -G app app` - BusyBox syntax, since the base is Alpine),
+    `USER app`, `EXPOSE 8080`.
+  - `ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]` - `exec` makes the JVM
+    PID 1 so `docker stop` delivers SIGTERM to it and Spring shuts down gracefully.
+  - `.dockerignore` must list at least `target/` and `.legacylift/`, or the build context
+    carries tens of MB of build output and a host-built jar can leak into the image.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
 
