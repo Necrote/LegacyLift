@@ -23,21 +23,41 @@ compile, unit tests green, **80%+ PIT mutation score**.
 
 ## Quick start
 
-Install the agent (Python 3.12):
+**Prerequisites:** Python 3.14, Java 21 (Temurin), Maven 3.9+, and an OpenAI **Platform** API key
+(pay-as-you-go billing — ChatGPT subscription credits do not work here).
+
+Create the virtualenv and install the agent **from the repo root**:
+
+```powershell
+# Windows / PowerShell
+py -3.14 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e .\agent
+$env:OPENAI_API_KEY = "sk-..."
+```
 
 ```bash
+# macOS / Linux
+python3.14 -m venv .venv
+source .venv/bin/activate
 pip install -e ./agent
-# PowerShell:  $env:OPENAI_API_KEY = "sk-..."
-# bash:        export OPENAI_API_KEY="sk-..."
+export OPENAI_API_KEY="sk-..."
 ```
 
-Run the three-stage pipeline against the bundled sample, from the repo root:
+Activation is per-terminal — re-run the activate line in each new shell, or the `legacylift`
+command won't be on your `PATH`.
+
+Run the three-stage pipeline against the bundled sample, **staying in the repo root** so each
+command finds what the previous one wrote:
 
 ```bash
-legacylift analyze  samples/legacy-inventory                              # -> MODERNIZATION_PLAN.md
+legacylift analyze  samples/legacy-inventory                      # -> MODERNIZATION_PLAN.md
 legacylift generate samples/legacy-inventory -o output/inventory-service
-legacylift verify   output/inventory-service                              # compile + JUnit + PIT >=80% gate
+legacylift verify   output/inventory-service                      # compile + JUnit + PIT >=80% gate
 ```
+
+`generate` reads `MODERNIZATION_PLAN.md` from the current directory (override with `-p`), which is
+why every command runs from the root.
 
 `verify` is the quality gate: it runs `mvn verify` — compile, JUnit tests, then PIT — and **fails
 if the mutation score drops below 80%**. When the build fails it doesn't just report; it feeds the

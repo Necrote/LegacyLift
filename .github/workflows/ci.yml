@@ -7,6 +7,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
-        with: { python-version: "3.12" }
+        with: { python-version: "3.14" }
       - run: pip install -e ./agent ruff==0.16.0
       - run: ruff check agent
+
+  generated-service-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      # Runs compile -> JUnit -> pitest mutationCoverage (bound to verify in the pom);
+      # fails the build when the mutation score < 80%.
+      - run: mvn -B verify
+        working-directory: examples/inventory-service
