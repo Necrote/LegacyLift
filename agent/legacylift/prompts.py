@@ -63,9 +63,10 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   them) unless a test kills their mutations; (b) every other public method you write - controller
   endpoints, exception handlers, mappers - must have a test asserting its return value/behavior,
   or its mutations survive and sink the score. Aim comfortably above 80%, not exactly at it.
-- pom.xml including spring-boot-starter-web, data-jpa, h2 (test), and a <properties> block
-  setting project.build.sourceEncoding to UTF-8 so the build is not dependent on the platform's
-  default encoding.
+- pom.xml including spring-boot-starter-web, data-jpa, h2 (at `runtime` scope - see the
+  "must RUN" section below), springdoc-openapi (see SELF-DOCUMENTING ENDPOINTS below), and a
+  <properties> block setting project.build.sourceEncoding to UTF-8 so the build is not dependent
+  on the platform's default encoding.
 - The spring-boot-maven-plugin MUST be in <build><plugins> so the service is actually runnable
   via `mvn spring-boot:run` and repackages into an executable jar. Its version is inherited from
   spring-boot-starter-parent - do not pin it.
@@ -131,6 +132,34 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   responses into 500s. Catch a specific type (e.g. DataAccessException). Assert BOTH the handler's
   status and its response body, or the body-string mutation survives and costs you score.
 - No placeholder logic: port the REAL business rules found in the legacy source.
+- WIRE-CONTRACT FIDELITY: existing callers of the legacy endpoint must keep working, so port the
+  HTTP contract as faithfully as the business rules. Do NOT "modernize" it by reflex. The plan's
+  REST endpoints section already quotes this contract out of the legacy source - honor it.
+  - RESPONSE BODY FORMAT: reproduce exactly what the legacy handler writes. If it writes a
+    delimited or otherwise plain-text line (e.g. `out.print(a + "|" + b + ...)`), the controller
+    method returns `String` with `produces = MediaType.TEXT_PLAIN_VALUE`, assembling the same
+    fields in the SAME ORDER with the SAME separator and the SAME per-field formatting - a
+    `String.format("%.2f", ...)` in the legacy source means the response carries `88.00`, not
+    88.0 or 88. Returning a DTO for Jackson to serialize into JSON is a BREAKING CHANGE, and it
+    is invisible to the mutation gate: PIT proves the logic is constrained, not that the bytes on
+    the wire still match. Emit JSON ONLY if the legacy source itself emitted JSON.
+  - REQUEST SHAPE: keep every parameter where the legacy code read it from. A value read with
+    `request.getParameter("sku")` is a QUERY PARAMETER - `@RequestParam("sku")` - NOT a
+    `@PathVariable`; rewriting `?sku=X` as `/{sku}` breaks every existing caller. Keep the legacy
+    parameter NAMES and any quoted default values.
+  - PATH: if the legacy source declares a mapping (web.xml `<url-pattern>`, `@WebServlet`), use
+    it verbatim - do not add a version segment (`/v1`) or any other prefix it does not have. If
+    it declares NO mapping, the path is yours to choose, so choose the plainest one the domain
+    implies (`/api/<resource>`) and use no version segment; a caller-visible path invented out of
+    nothing is still a contract you are inventing, so keep it minimal and predictable.
+  - STATUS CODES AND THEIR BODIES: preserve both. Legacy `resp.setStatus(404); out.print("NOT
+    FOUND")` means the modern 404 also carries the body `NOT FOUND`. Return a `ResponseEntity`
+    with that status and body straight from the controller rather than throwing
+    ResponseStatusException - a thrown one renders Spring's JSON error object instead of the
+    legacy body.
+  Pin the contract in tests: for each endpoint, at least one test must assert the EXACT response
+  body string AND its Content-Type, so a mutation that reorders, reformats or re-delimits the
+  fields is killed instead of surviving.
 - The service must RUN, not merely build. `java -jar target/*.jar` has to serve the endpoint
   with no external database and no manual setup, so emit all three of these:
   - The database dependency (h2) at `<scope>runtime</scope>`, NOT `test`. A test-scoped driver
@@ -146,6 +175,50 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
     reorder threshold). Seed with data.sql ONLY - never a CommandLineRunner, @PostConstruct or
     other Java seeding component: PIT mutates every class you emit, so a Java seeder is untested
     surface area that will sink the mutation score. SQL is not mutated.
+    The seed is the DEMO the README curls, not a test fixture, so name the rows the way the
+    domain names them - stable, human-readable identifiers a reader can type (`SKU-1`, `SKU-2`),
+    NOT identifiers named after the edge case they exercise (`EQ50`, `ABOVE`, `NEG`, `LOW`).
+    Boundary and degenerate cases belong in the test sources, where they are already asserted;
+    seeding them here leaks fixtures into the running demo. For an inventory domain, seed
+    EXACTLY these two rows so the documented demo stays reproducible run to run:
+      sku `SKU-1`, name `Widget`, qty 200, reorder_level 50, unit_price 100.00
+      sku `SKU-2`, name `Gadget`, qty 5,   reorder_level 10, unit_price 100.00
+    (`SKU-1` at orderQty=500 -> `SKU-1|Widget|200|false|88.00`; `SKU-2` is reorder-flagged, so
+    its break is suppressed -> `SKU-2|Gadget|5|true|100.00`.) Map the same shape onto whatever
+    domain the legacy source actually models: two plainly-named rows, one either side of the
+    rule's threshold.
+- SELF-DOCUMENTING ENDPOINTS: the service publishes an OpenAPI (Swagger) description of every
+  endpoint it serves, so what it exposes is discoverable by asking the RUNNING SERVICE rather than
+  by reading a hand-written document that drifts out of date the first time generation picks a
+  different path. Emit all of:
+  - `org.springdoc:springdoc-openapi-starter-webmvc-ui` in the pom, at DEFAULT (compile) scope -
+    NOT `runtime`, because the annotations below are compiled against it. You MUST give it an
+    explicit <version>: it is third-party, so spring-boot-starter-parent does not manage it and
+    the build fails with "'dependencies.dependency.version' is missing". Match the version to the
+    Boot version you chose - springdoc `2.6.0` for Boot 3.3.x, `2.7.0` for Boot 3.4+. It needs no
+    other wiring: it serves the spec at `/v3/api-docs` and the Swagger UI at `/swagger-ui.html`.
+  - Leave those two paths at their defaults. The endpoint a service exposes legitimately differs
+    from project to project, so the value of this is that the place you go to LOOK it up does not.
+  - Documentation as ANNOTATIONS ON THE CLASSES YOU ALREADY EMIT. Never add a `@Configuration`
+    class with an `@Bean OpenAPI` method, and never any other new type whose only job is
+    documentation: PIT mutates every class you emit, so a documentation bean is untested surface
+    area that sinks the mutation score while adding no behavior. Annotations hold no branches and
+    are not mutated, so they cost nothing. Put `@OpenAPIDefinition(info = @Info(title = ...,
+    version = ...))` on the existing `@SpringBootApplication` class, and `@Operation`,
+    `@Parameter` and `@ApiResponse` on the existing controller methods. The packages are
+    `io.swagger.v3.oas.annotations` (`@Operation`, `@Parameter`), and beneath it
+    `.OpenAPIDefinition`, `.info.Info`, `.responses.ApiResponse`, `.media.Content`,
+    `.media.Schema` and `.enums.ParameterIn`.
+  - Document the ACTUAL ported contract from WIRE-CONTRACT FIDELITY above, not an idealized REST
+    version of it - a Swagger page promising JSON for an endpoint that answers plain text is worse
+    than no Swagger page. If the endpoint answers `text/plain`, its @ApiResponse carries
+    `content = @Content(mediaType = "text/plain", schema = @Schema(type = "string"),
+    examples = ...)` with a REAL response line as the example. If an input is a query parameter,
+    document it as `@Parameter(in = ParameterIn.QUERY)`. Document EVERY status the controller can
+    return, including the legacy error statuses, each with the exact body it carries.
+  - Do NOT write tests asserting the content of `/v3/api-docs` or the Swagger UI. springdoc is a
+    library rather than code you emitted, so it is outside the mutation gate; such a test pins the
+    library's rendering and breaks on its next upgrade without ever protecting your own logic.
 - A multi-stage `Dockerfile` plus a `.dockerignore`, so the service runs as a container:
   - Build stage `FROM maven:3.9-eclipse-temurin-21`: copy `pom.xml` alone and run
     `mvn -B --no-transfer-progress dependency:go-offline` FIRST, then copy `src` and run
@@ -203,7 +276,23 @@ CONSTRAINTS THE ORIGINAL GENERATION HAD TO SATISFY - your fix must not regress t
     gives you an ObjectAssert without them, which is a compile error, not a test failure.
 - PIT mutates EVERY class emitted, so do not add untested surface area: no equals/hashCode/
   toString on entities or DTOs, and every public method you add needs a test asserting its
-  behavior or its mutations survive and cost score.
+  behavior or its mutations survive and cost score. This is also why the OpenAPI description
+  lives in ANNOTATIONS on existing classes: do not "fix" anything by introducing a
+  `@Configuration` class with an `@Bean OpenAPI` method, which adds a mutable method that no
+  test covers.
+- The service DOCUMENTS ITSELF through springdoc-openapi. Keep the dependency in the pom at
+  compile scope with its explicit version, keep `/v3/api-docs` and `/swagger-ui.html` at their
+  defaults, and keep the swagger annotations describing the contract the controller actually
+  serves - if you change a status code, media type or parameter, update its annotation to match.
+  Dropping the dependency to clear a compile error is not a fix: the missing-symbol errors it
+  causes are in the imports, so restore the dependency instead of deleting the annotations.
+- The HTTP WIRE CONTRACT is ported from the legacy source: the response body format and its
+  Content-Type, the request parameter names and whether each is a query param or a path
+  variable, the path itself, and each status code with the body it carries. A test asserting an
+  exact body string or Content-Type is pinning that contract, so it is NOT a wrong expectation -
+  never make it pass by reformatting the response (e.g. swapping a plain-text delimited line for
+  JSON), renaming a parameter, or moving one between `@RequestParam` and `@PathVariable`. Fix
+  the main code to emit what the legacy source emitted.
 - Rule tests must pin exact threshold BOUNDARIES (assert at 99 and 100, at 499 and 500 - not a
   mid-range value) so no changed-conditional-boundary mutation survives.
 - A runtime exception from a service does NOT become a 500 under @WebMvcTest/MockMvc - it

@@ -44,7 +44,7 @@ def _exts(name: str, default: frozenset[str]) -> frozenset[str]:
 # MODEL is the OpenAI chat model every stage runs on; MAX_TOKENS caps one reply. A full
 # service generation is the largest reply, so lowering MAX_TOKENS truncates generate first.
 MODEL = _str("MODEL", "gpt-5")
-MAX_TOKENS = _int("MAX_TOKENS", 16_000)
+MAX_TOKENS = _int("MAX_TOKENS", 20_000)
 
 # --- TUNABLE: pipeline defaults (each is also a CLI flag) --------------------------------
 # Relative to the current directory: analyze writes PLAN_FILE, generate reads it back, so

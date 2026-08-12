@@ -26,18 +26,17 @@ compile, unit tests green, **80%+ PIT mutation score**.
 Install the agent (Python 3.12):
 
 ```bash
-cd agent
-pip install -e .
+pip install -e ./agent
 # PowerShell:  $env:OPENAI_API_KEY = "sk-..."
-# bash:        export OPENAI_API_KEY = sk-...
+# bash:        export OPENAI_API_KEY="sk-..."
 ```
 
-Run the three-stage pipeline against the bundled sample:
+Run the three-stage pipeline against the bundled sample, from the repo root:
 
 ```bash
-legacylift analyze  ../samples/legacy-inventory                          # -> MODERNIZATION_PLAN.md
-legacylift generate ../samples/legacy-inventory -o ../output/inventory-service
-legacylift verify   ../output/inventory-service                          # compile + JUnit + PIT >=80% gate
+legacylift analyze  samples/legacy-inventory                              # -> MODERNIZATION_PLAN.md
+legacylift generate samples/legacy-inventory -o output/inventory-service
+legacylift verify   output/inventory-service                              # compile + JUnit + PIT >=80% gate
 ```
 
 `verify` is the quality gate: it runs `mvn verify` — compile, JUnit tests, then PIT — and **fails
@@ -89,13 +88,32 @@ Then, in another terminal:
 
 ```bash
 # well-stocked SKU (qty 200 > reorder level 50), 500 units -> 12% price break applied
-curl "localhost:8080/api/v1/inventory?sku=SKU-1&orderQty=500"
+curl "http://localhost:8080/api/inventory?sku=SKU-1&orderQty=500"
 # SKU-1|Widget|200|false|88.00
 
 # reorder-flagged SKU (qty 5 <= reorder level 10) -> price break suppressed by the reorder rule
-curl "localhost:8080/api/v1/inventory?sku=SKU-2&orderQty=500"
+curl "http://localhost:8080/api/inventory?sku=SKU-2&orderQty=500"
 # SKU-2|Gadget|5|true|100.00
 ```
+
+On **Windows PowerShell**, `curl` is an alias for `Invoke-WebRequest`, which rejects a URL without a
+scheme (`The URI prefix is not recognized`). Call the real curl that ships with Windows 10+ instead:
+
+```powershell
+curl.exe "http://localhost:8080/api/inventory?sku=SKU-1&orderQty=500"
+```
+
+The generated service also describes itself. Every endpoint it serves is published as OpenAPI,
+so the contract is discoverable from the service rather than from this file:
+
+- **Swagger UI** — <http://localhost:8080/swagger-ui.html>
+- **OpenAPI spec (JSON)** — <http://localhost:8080/v3/api-docs>
+
+The generation prompt requires the description to match the *ported* contract rather than an
+idealized REST reading of it — a `text/plain` endpoint is documented as `text/plain`, a query
+parameter as a query parameter, and each legacy status code with the exact body it carries. It
+is written as annotations on the classes the generator already emits, never as a separate
+`@Bean OpenAPI` configuration class, which would be one more untested class for PIT to mutate.
 
 The response is the legacy pipe-delimited line `sku|name|qty|needsReorder|unitPrice`, preserved
 from the original servlet along with its `404 NOT FOUND` for an unknown SKU. The price-break
@@ -112,12 +130,22 @@ the identical responses — the in-memory H2 and its `data.sql` seed are part of
 service now, not a manual step.
 
 > Generation is stochastic, so class names and the exact endpoint can vary between runs. If a
-> `curl` above 404s, check what your service actually exposes:
-> `grep -rn "Mapping" src/main/java --include=*.java`.
+> `curl` above 404s you don't have to grep for the real path — the running service will tell you.
+> Open <http://localhost:8080/swagger-ui.html> and read it off the page, or from a terminal:
+>
+> ```powershell
+> # PowerShell: every path the running service exposes
+> (Invoke-RestMethod http://localhost:8080/v3/api-docs).paths.PSObject.Properties.Name
+> ```
+>
+> ```bash
+> # bash: the YAML rendering is readable as-is, no jq needed
+> curl -s http://localhost:8080/v3/api-docs.yaml
+> ```
 
 ## Roadmap
 
-**Week 1 — done ✅**
+**Done ✅**
 
 - **End-to-end pipeline** — `analyze → generate → verify` running on the OpenAI API (gpt-5).
 - **Traceable plan** — `analyze` emits a `MODERNIZATION_PLAN.md` where every claim is anchored to a
@@ -137,7 +165,7 @@ service now, not a manual step.
   current source back to the agent, applies the fix, re-runs, capped at 3 attempts — with fixes
   that weaken the mutation gate rejected before they reach disk.
 
-**Week 2 — next**
+**TO-DOs**
 
 - **Replace H2 with PostgreSQL** — Testcontainers for tests, a real datasource for run
   (the generated `Dockerfile` becomes one service in a `docker compose` stack).
