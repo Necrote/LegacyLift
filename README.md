@@ -53,43 +53,119 @@ command finds what the previous one wrote:
 ```bash
 legacylift analyze  samples/legacy-inventory                      # -> MODERNIZATION_PLAN.md
 legacylift generate samples/legacy-inventory -o output/inventory-service
-cd output/inventory-service && mvn verify                         # compile + JUnit + PIT >=80% gate
+legacylift verify   output/inventory-service                      # compile + JUnit + PIT >=80% gate
 ```
 
 `generate` reads `MODERNIZATION_PLAN.md` from the current directory (override with `-p`), which is
-why both commands run from the root.
+why every command runs from the root.
 
-`mvn verify` is the quality gate: it compiles, runs the JUnit tests, and **fails the build if the
-PIT mutation score drops below 80%**.
+`verify` is the quality gate: it runs `mvn verify` — compile, JUnit tests, then PIT — and **fails
+if the mutation score drops below 80%**. When the build fails it doesn't just report; it feeds the
+Maven errors back to the agent, applies the fix, and re-runs, **capped at 3 attempts**:
 
-## Run the generated service (demo)
+```
+$ legacylift verify output/inventory-service
+  mvn verify FAILED (exit 1, compile): InventoryControllerTest.java:[7,49] package org.springframework.boot.test.mock does not exist
+  fix attempt 1/3: asking gpt-5 ...
+  rewrote 1 file(s): src/test/java/com/acme/inventory/controller/InventoryControllerTest.java
+VERIFIED after 1 fix attempt(s) - mvn verify green, PIT gate held.
+```
 
-The generated service is a runnable Spring Boot app (its pom includes `spring-boot-maven-plugin`).
-Running it locally today needs two small manual tweaks — a **Week-2 automation target**: scope the
-H2 dependency `runtime` instead of `test`, and drop a `data.sql` seed under
-`src/main/resources`. With those in place:
+The loop is not allowed to cheat its way to green. A proposed fix that lowers `mutationThreshold`,
+unbinds pitest from the verify phase, or `@Disabled`s a test is **rejected before it is written** —
+the gate is the product, so a "fix" that removes it is discarded. Every rewritten file is backed up
+under `.legacylift/attempt-N/`, and each run appends to `.legacylift/verify.log`. If 3 attempts
+aren't enough, it says so and exits non-zero rather than claiming success.
+
+## Configuration
+
+Every tunable — model, token cap, corpus size limit, command defaults, Maven timeout — lives in
+`agent/legacylift/config.py`, and each one can be overridden for a single run with a
+`LEGACYLIFT_*` environment variable:
+
+```bash
+LEGACYLIFT_MODEL=gpt-5-mini legacylift generate samples/legacy-inventory
+LEGACYLIFT_MAX_ITERATIONS=5 legacylift verify output/inventory-service
+```
+
+The mutation-gate invariants (the 80% floor, the Maven arg list) are deliberately **not**
+overridable — an env var that could set the threshold to 0, or slip in `-DskipTests`, would
+disable the quality gate from outside the process. Those change only by editing the file.
+
+## Run the generated service (Docker demo)
+
+The generated service ships its own multi-stage `Dockerfile`, so it runs as a container with no
+JDK, no Maven and no database on your machine — and no manual edits. From the generated service
+directory:
 
 ```bash
 cd output/inventory-service
-mvn spring-boot:run
+docker build -t legacylift/inventory-service .
+docker run --rm -p 8080:8080 legacylift/inventory-service
 ```
+
+Then, in another terminal:
 
 ```bash
-# well-stocked SKU, 500 units -> 12% price break applied
-curl "localhost:8080/api/inventory/SKU-1?orderQty=500"
-# {"sku":"SKU-1","name":"Widget","qty":200,"needsReorder":false,"unitPrice":88.00}
+# well-stocked SKU (qty 200 > reorder level 50), 500 units -> 12% price break applied
+curl "http://localhost:8080/api/inventory?sku=SKU-1&orderQty=500"
+# SKU-1|Widget|200|false|88.00
 
-# reorder-flagged SKU -> price break suppressed by the reorder rule
-curl "localhost:8080/api/inventory/SKU-2?orderQty=500"
-# {"sku":"SKU-2","name":"Gadget","qty":5,"needsReorder":true,"unitPrice":100.00}
+# reorder-flagged SKU (qty 5 <= reorder level 10) -> price break suppressed by the reorder rule
+curl "http://localhost:8080/api/inventory?sku=SKU-2&orderQty=500"
+# SKU-2|Gadget|5|true|100.00
 ```
 
-The JSON endpoint is `GET /api/inventory/{sku}?orderQty=N`; a legacy pipe-delimited endpoint is
-also generated at `GET /api/v1/inventory?sku=...&orderQty=N`.
+On **Windows PowerShell**, `curl` is an alias for `Invoke-WebRequest`, which rejects a URL without a
+scheme (`The URI prefix is not recognized`). Call the real curl that ships with Windows 10+ instead:
+
+```powershell
+curl.exe "http://localhost:8080/api/inventory?sku=SKU-1&orderQty=500"
+```
+
+The generated service also describes itself. Every endpoint it serves is published as OpenAPI,
+so the contract is discoverable from the service rather than from this file:
+
+- **Swagger UI** — <http://localhost:8080/swagger-ui.html>
+- **OpenAPI spec (JSON)** — <http://localhost:8080/v3/api-docs>
+
+The generation prompt requires the description to match the *ported* contract rather than an
+idealized REST reading of it — a `text/plain` endpoint is documented as `text/plain`, a query
+parameter as a query parameter, and each legacy status code with the exact body it carries. It
+is written as annotations on the classes the generator already emits, never as a separate
+`@Bean OpenAPI` configuration class, which would be one more untested class for PIT to mutate.
+
+The response is the legacy pipe-delimited line `sku|name|qty|needsReorder|unitPrice`, preserved
+from the original servlet along with its `404 NOT FOUND` for an unknown SKU. The price-break
+boundaries are preserved too — the same SKU at `orderQty=100` returns `95.00` (5%) and at `99`
+returns `100.00` (no break).
+
+**The build stage runs the unit tests but stops at `package`**, one phase before the `verify` that
+pitest is bound to — the mutation gate belongs in `legacylift verify` and CI, not in every image
+build. Nothing is skipped to make the image build pass. The runtime stage is a JRE-only Alpine
+image running as a non-root user, with the JVM as PID 1 so `docker stop` shuts Spring down cleanly.
+
+Prefer to run it without Docker? `mvn spring-boot:run` in the same directory works too, and serves
+the identical responses — the in-memory H2 and its `data.sql` seed are part of the generated
+service now, not a manual step.
+
+> Generation is stochastic, so class names and the exact endpoint can vary between runs. If a
+> `curl` above 404s you don't have to grep for the real path — the running service will tell you.
+> Open <http://localhost:8080/swagger-ui.html> and read it off the page, or from a terminal:
+>
+> ```powershell
+> # PowerShell: every path the running service exposes
+> (Invoke-RestMethod http://localhost:8080/v3/api-docs).paths.PSObject.Properties.Name
+> ```
+>
+> ```bash
+> # bash: the YAML rendering is readable as-is, no jq needed
+> curl -s http://localhost:8080/v3/api-docs.yaml
+> ```
 
 ## Roadmap
 
-**Week 1 — done ✅**
+**Done ✅**
 
 - **End-to-end pipeline** — `analyze → generate → verify` running on the OpenAI API (gpt-5).
 - **Traceable plan** — `analyze` emits a `MODERNIZATION_PLAN.md` where every claim is anchored to a
@@ -101,14 +177,18 @@ also generated at `GET /api/v1/inventory?sku=...&orderQty=N`.
 - **Tests proven to constrain, not just cover** — deleting each business rule turns a specific test
   red (manual mutation check).
 - **Runnable service + live curl demo** — see above.
+- **Containerized out of the box** — every generated service ships a multi-stage `Dockerfile`
+  (Maven build stage → JRE-only Alpine runtime, non-root) plus an in-memory datasource and seed,
+  so `docker build && docker run` serves the endpoint with nothing installed but Docker.
+- **Automated fix loop** — `legacylift verify` takes generated code to verified code unattended:
+  classifies the failure (compile / test / mutation), sends a filtered Maven excerpt plus the
+  current source back to the agent, applies the fix, re-runs, capped at 3 attempts — with fixes
+  that weaken the mutation gate rejected before they reach disk.
 
-**Week 2 — next**
+**TO-DOs**
 
-- **Replace H2 with PostgreSQL** — Testcontainers for tests, a real datasource for run.
-- **Runnable out of the box** — auto-configured datasource + an optional seed profile, so the
-  runtime-H2 and demo-seed steps above aren't manual.
-- **Automated fix loop** — feed `mvn` compile/verify errors back to the agent automatically instead
-  of by hand.
+- **Replace H2 with PostgreSQL** — Testcontainers for tests, a real datasource for run
+  (the generated `Dockerfile` becomes one service in a `docker compose` stack).
 
 ## Why the quality gates matter
 
