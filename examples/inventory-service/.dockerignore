@@ -1,0 +1,10 @@
+# Keep the build context small and the build hermetic. target/ alone is tens of MB of
+# build output, and copying a host-built jar into the image would defeat the build stage.
+target/
+.legacylift/
+*.log
+.git/
+.gitignore
+Dockerfile
+.dockerignore
+compose.yaml
