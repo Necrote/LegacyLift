@@ -31,15 +31,43 @@
       <artifactId>spring-boot-starter-data-jpa</artifactId>
     </dependency>
 
+    <!--
+      Runtime, not test: a test-scoped driver is absent from the packaged jar and the app
+      dies at startup with "Failed to configure a DataSource". Runtime scope is on the test
+      classpath too, so the integration tests below still see it.
+    -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
     <!-- Test -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Testcontainers gives the *IT classes a real PostgreSQL rather than an embedded stand-in,
+      so the schema.sql the service actually ships is the one the tests run against.
+      spring-boot-testcontainers supplies @ServiceConnection, which points the context at the
+      container without a single hardcoded URL. Every version here is managed by
+      spring-boot-starter-parent (it imports testcontainers-bom) - do not pin them.
+    -->
     <dependency>
-      <groupId>com.h2database</groupId>
-      <artifactId>h2</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>
@@ -49,6 +77,19 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+
+      <!--
+        Runs the *IT classes. Version and the integration-test/verify goal bindings both come
+        from spring-boot-starter-parent's pluginManagement, so a bare declaration is enough.
+        Declared BEFORE pitest deliberately: failsafe:verify and pitest:mutationCoverage are
+        both bound to the `verify` phase, and Maven runs same-phase goals in declaration
+        order - so a broken integration test reports immediately instead of after a
+        multi-minute mutation run.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
       </plugin>
 
       <plugin>
@@ -73,6 +114,18 @@
             <param>com.acme.inventory.*</param>
             <param>com.acme.inventory.*.*</param>
           </targetTests>
+          <!--
+            PIT finds test classes on the classpath, not from surefire's configuration, so
+            without this it would run the *IT classes inside its own forked JVMs - a
+            PostgreSQL container per mutant. Worse than slow: PIT counts a TIMED_OUT mutant
+            as detected, so container-bound tests could inflate the score rather than earn
+            it. The gate is a unit-test gate; integration tests are failsafe's job.
+            One param is enough: PIT compiles a glob's `*` to regex `.*`, which spans the
+            package dots, so this also matches com.acme.inventory.repository.*IT.
+          -->
+          <excludedTestClasses>
+            <param>com.acme.inventory.*IT</param>
+          </excludedTestClasses>
           <outputFormats>
             <param>HTML</param>
             <param>XML</param>
