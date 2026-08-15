@@ -1,7 +1,7 @@
 """Collect legacy source files into a single context block for the agent."""
 from pathlib import Path
 
-from .config import MAX_BYTES, SOURCE_EXTS
+from .config import MAX_BYTES, SOURCE_EXTS, SOURCE_NAMES
 
 
 def collect_sources(root: str, exclude_dirs: frozenset = frozenset()) -> str:
@@ -20,7 +20,9 @@ def collect_sources(root: str, exclude_dirs: frozenset = frozenset()) -> str:
         # backups; analyze/generate pass nothing and keep the original walk-everything behavior.
         if exclude_dirs and exclude_dirs.intersection(p.relative_to(base).parts[:-1]):
             continue
-        if p.suffix in SOURCE_EXTS and p.is_file():
+        # Name match as well as suffix: Dockerfile and .dockerignore have no suffix at all,
+        # and the fix loop cannot repair a container setup it was never shown.
+        if (p.suffix in SOURCE_EXTS or p.name in SOURCE_NAMES) and p.is_file():
             text = p.read_text(encoding="utf-8", errors="replace")
             total += len(text)
             if total > MAX_BYTES:
@@ -31,6 +33,7 @@ def collect_sources(root: str, exclude_dirs: frozenset = frozenset()) -> str:
         skipped = f" (ignoring {'/'.join(sorted(exclude_dirs))})" if exclude_dirs else ""
         raise SystemExit(
             f"No legacy source files found under {root}{skipped} - the directory exists but "
-            f"holds nothing with a supported extension ({' '.join(sorted(SOURCE_EXTS))})."
+            f"holds nothing with a supported extension ({' '.join(sorted(SOURCE_EXTS))}) "
+            f"or name ({' '.join(sorted(SOURCE_NAMES))})."
         )
     return "\n\n".join(parts)
