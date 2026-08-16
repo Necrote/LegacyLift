@@ -139,6 +139,15 @@ def verify(service_dir, max_iterations, legacy, timeout):
         click.echo(f"  mvn verify FAILED (exit {rc}, {kind}): {why}")
         _log(log, f"\n--- verify #{attempt + 1}: exit {rc}, {kind}: {why}\n{excerpt}")
 
+        # No edit to the service can fix a missing Docker daemon, so stop rather than spend
+        # attempts (and model calls) rewriting code over an environment problem. Checked here
+        # because FIX_HINTS has no entry for this kind - indexing it would raise KeyError.
+        if kind == "environment":
+            click.echo("  the integration tests need a running Docker daemon - "
+                       "start Docker and re-run. Nothing was changed.")
+            _log(log, "--- stopped: environment failure, no fix attempted")
+            break
+
         if attempt >= max_iterations:
             break
         attempt += 1
@@ -161,7 +170,7 @@ def verify(service_dir, max_iterations, legacy, timeout):
             break
 
         # Reject before writing: a fix that passes by dismantling the gate is not a fix.
-        violations = verifier.gate_violations(files)
+        violations = verifier.gate_violations(files, svc)
         if violations:
             click.echo("  REJECTED - the proposed fix weakens the quality gate:")
             for v in violations:
