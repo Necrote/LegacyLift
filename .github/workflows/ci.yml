@@ -20,7 +20,10 @@ jobs:
           distribution: temurin
           java-version: "21"
           cache: maven
-      # Runs compile -> JUnit -> pitest mutationCoverage (bound to verify in the pom);
-      # fails the build when the mutation score < 80%.
+      # Runs compile -> JUnit (surefire) -> the *IT classes (failsafe, which start a real
+      # postgres:16-alpine via Testcontainers) -> pitest mutationCoverage, all bound to verify
+      # in the pom; fails the build when the mutation score < 80%.
+      # No docker setup step: ubuntu-latest ships a running daemon, and Testcontainers finds it
+      # over the unix socket with no configuration.
       - run: mvn -B verify
         working-directory: examples/inventory-service
