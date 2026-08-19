@@ -40,6 +40,18 @@ def _exts(name: str, default: frozenset[str]) -> frozenset[str]:
     return frozenset("." + p.lstrip(".") for p in parts if p.strip("."))
 
 
+def _names(name: str, default: frozenset[str]) -> frozenset[str]:
+    """Like _exts, but for whole filenames - no leading dot is added or stripped.
+
+    Kept separate because these entries are matched against Path.name: running "Dockerfile"
+    through _exts would turn it into ".Dockerfile" and it would never match anything.
+    """
+    raw = os.environ.get(ENV_PREFIX + name)
+    if raw is None:
+        return default
+    return frozenset(p.strip() for p in raw.replace(",", " ").split() if p.strip())
+
+
 # --- TUNABLE: the model ------------------------------------------------------------------
 # MODEL is the OpenAI chat model every stage runs on; MAX_TOKENS caps one reply. A full
 # service generation is the largest reply, so lowering MAX_TOKENS truncates generate first.
@@ -56,11 +68,25 @@ MAX_ITERATIONS = _int("MAX_ITERATIONS", 3)
 # --- TUNABLE: how much source is fed to the model ----------------------------------------
 # collect_sources concatenates files with these extensions and stops at MAX_BYTES, which
 # bounds context cost. Past the cap it truncates rather than failing.
-SOURCE_EXTS = _exts("SOURCE_EXTS", frozenset({".java", ".jsp", ".sql", ".xml", ".properties"}))
+SOURCE_EXTS = _exts(
+    "SOURCE_EXTS",
+    frozenset({".java", ".jsp", ".sql", ".xml", ".properties", ".yml", ".yaml"}),
+)
+# Files the generated service depends on that have no usable suffix: Path("Dockerfile").suffix
+# and Path(".dockerignore").suffix are both "", so an extension list can never reach them and
+# the fix loop would be asked to repair a service whose container setup it cannot see.
+# Matched on the whole filename, so these keep their exact spelling - not run through _exts,
+# which would turn "Dockerfile" into ".Dockerfile".
+SOURCE_NAMES = _names("SOURCE_NAMES", frozenset({"Dockerfile", ".dockerignore"}))
 MAX_BYTES = _int("MAX_BYTES", 400_000)
 
 # --- TUNABLE: the verify loop -------------------------------------------------------------
-MVN_TIMEOUT = _int("MVN_TIMEOUT", 900)  # PIT on even a small service is minutes, not seconds
+# PIT on even a small service is minutes, not seconds - and `verify` now also runs the *IT
+# classes, whose first run pulls the postgres and ryuk images before a container even starts.
+MVN_TIMEOUT = _int("MVN_TIMEOUT", 1_500)
+# Just a liveness probe on the Docker daemon (see verifier._require_docker), so this is short
+# on purpose: an unresponsive daemon should fail fast, not hold the run open.
+DOCKER_TIMEOUT = _int("DOCKER_TIMEOUT", 30)
 EXCERPT_CHARS = _int("EXCERPT_CHARS", 24_000)  # cap on the distilled Maven log sent back
 EXCERPT_TAIL_LINES = _int("EXCERPT_TAIL_LINES", 40)  # always-kept tail of that log
 

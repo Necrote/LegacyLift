@@ -46,9 +46,6 @@ TRACEABILITY CONTRACT (this is what makes the plan trustworthy):
 
 Be concrete and verifiable. No unquoted assertions, no line numbers, no vague ranges."""
 
-# TODO(future): Replace H2 with PostgreSQL. The prompt below asks for `h2 (test)`, which is a
-# basic in-memory DB fine for a demo but not representative of a production target. Move the
-# generated service to PostgreSQL (e.g. Testcontainers for tests, a real datasource for run).
 GENERATE_SYSTEM = """You are a senior Spring Boot engineer practicing TDD. Given a modernization plan
 and the original legacy source, generate a complete Spring Boot 3 / Java 21 Maven service:
 
@@ -63,10 +60,21 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   them) unless a test kills their mutations; (b) every other public method you write - controller
   endpoints, exception handlers, mappers - must have a test asserting its return value/behavior,
   or its mutations survive and sink the score. Aim comfortably above 80%, not exactly at it.
-- pom.xml including spring-boot-starter-web, data-jpa, h2 (at `runtime` scope - see the
-  "must RUN" section below), springdoc-openapi (see SELF-DOCUMENTING ENDPOINTS below), and a
-  <properties> block setting project.build.sourceEncoding to UTF-8 so the build is not dependent
-  on the platform's default encoding.
+- pom.xml including spring-boot-starter-web, data-jpa, the PostgreSQL driver
+  `org.postgresql:postgresql` (at `runtime` scope - see the "must RUN" section below),
+  springdoc-openapi (see SELF-DOCUMENTING ENDPOINTS below), and a <properties> block setting
+  project.build.sourceEncoding to UTF-8 so the build is not dependent on the platform's default
+  encoding.
+  - The datastore is PostgreSQL REGARDLESS of what the legacy source connected to. A legacy
+    `jdbc:mysql://...` URL describes where the data lives TODAY, not the modernization target;
+    port the SQL and the schema, not the driver. Never emit mysql-connector-j, ojdbc, or an
+    embedded database (h2, hsqldb, derby) - see "A REAL DATABASE" below for why.
+  - Tests get a real PostgreSQL from Testcontainers, so also add, all at `test` scope:
+    `org.springframework.boot:spring-boot-testcontainers`, `org.testcontainers:postgresql` and
+    `org.testcontainers:junit-jupiter`. See INTEGRATION TESTS below.
+  - Do NOT put a <version> on any of those four. spring-boot-starter-parent manages the
+    PostgreSQL driver and imports testcontainers-bom, so their versions come from the Boot
+    version you chose. (springdoc is the one exception, and it is third-party - see below.)
 - The spring-boot-maven-plugin MUST be in <build><plugins> so the service is actually runnable
   via `mvn spring-boot:run` and repackages into an executable jar. Its version is inherited from
   spring-boot-starter-parent - do not pin it.
@@ -160,16 +168,40 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   Pin the contract in tests: for each endpoint, at least one test must assert the EXACT response
   body string AND its Content-Type, so a mutation that reorders, reformats or re-delimits the
   fields is killed instead of surviving.
-- The service must RUN, not merely build. `java -jar target/*.jar` has to serve the endpoint
-  with no external database and no manual setup, so emit all three of these:
-  - The database dependency (h2) at `<scope>runtime</scope>`, NOT `test`. A test-scoped driver
-    is absent from the packaged jar and the app dies at startup with "Failed to configure a
-    DataSource"; the tests still work at runtime scope, so this costs nothing.
-  - `src/main/resources/application.properties` pointing at an in-memory H2
-    (`spring.datasource.url=jdbc:h2:mem:<name>;DB_CLOSE_DELAY=-1`), with
-    `spring.jpa.hibernate.ddl-auto=create-drop` and
-    `spring.jpa.defer-datasource-initialization=true`. Without that last property the seed
-    below runs BEFORE Hibernate creates the tables and every INSERT fails.
+- A REAL DATABASE: the service must RUN, not merely build, and it must run against the database
+  it would really be deployed on. That is PostgreSQL in its own container - NOT an embedded
+  in-memory database. An embedded database makes a demo that boots but proves nothing: it has a
+  different SQL dialect and different type rules from the real target, so the schema is never
+  actually exercised and the data vanishes on restart. `docker compose up` has to serve the
+  endpoint with no manual setup, so emit all four of these:
+  - The driver `org.postgresql:postgresql` at `<scope>runtime</scope>`, NOT `test`. A
+    test-scoped driver is absent from the packaged jar and the app dies at startup with "Failed
+    to configure a DataSource"; runtime scope is also on the test classpath, so this costs
+    nothing.
+  - `src/main/resources/application.properties` with a PostgreSQL datasource:
+      spring.datasource.url=jdbc:postgresql://localhost:5432/<db>
+      spring.datasource.username=<user>
+      spring.datasource.password=<password>
+      spring.jpa.hibernate.ddl-auto=validate
+      spring.sql.init.mode=always
+    Write those as PLAIN VALUES matching the compose file below. Do NOT wrap them in
+    `${SPRING_DATASOURCE_URL:...}` placeholders: Spring's relaxed binding already maps the
+    environment variable SPRING_DATASOURCE_URL onto spring.datasource.url at higher precedence
+    than this file, so a placeholder only restates what the framework does. Do NOT set
+    `spring.datasource.driverClassName` either - it is derived from the URL.
+    - `ddl-auto=validate`, never `create-drop` or `update`: the schema is owned by schema.sql
+      (in a real deployment, by a migration tool), so Hibernate only checks that the entity
+      matches it and never silently rewrites a table.
+    - Do NOT set `spring.jpa.defer-datasource-initialization`. Under `ddl-auto=validate` it is
+      actively harmful: the scripts must run BEFORE Hibernate validates, and Spring Boot already
+      orders them that way. Deferring them means validate runs against a table that does not
+      exist yet and startup fails. (That property is only needed when Hibernate CREATES the
+      schema, which is exactly what this service no longer does.)
+  - `src/main/resources/schema.sql` creating the table the legacy SQL queried. Because
+    `ddl-auto=validate` compares it against the entity at every startup, the column types must
+    match the `@Column` annotations - a mismatch is a startup failure, which is the point. Use
+    `CREATE TABLE IF NOT EXISTS`: `spring.sql.init` runs on every boot and the data outlives the
+    process now.
   - `src/main/resources/data.sql` seeding a few rows drawn from the legacy domain, chosen so
     each business rule is visible from a single request (e.g. one row above and one row below a
     reorder threshold). Seed with data.sql ONLY - never a CommandLineRunner, @PostConstruct or
@@ -187,6 +219,56 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
     its break is suppressed -> `SKU-2|Gadget|5|true|100.00`.) Map the same shape onto whatever
     domain the legacy source actually models: two plainly-named rows, one either side of the
     rule's threshold.
+    End every INSERT with `ON CONFLICT (<pk>) DO NOTHING`. `spring.sql.init` runs on every boot
+    and a real PostgreSQL volume survives a restart, so a bare INSERT fails with a duplicate-key
+    error the second time the service starts.
+- INTEGRATION TESTS: the tests that touch the database use Testcontainers, so they run against
+  the same PostgreSQL the service is deployed on rather than a stand-in.
+  - NAMING IS THE CONTRACT: a test that needs a database is named `<Something>IT` and gets its
+    database from Testcontainers. Everything named `<Something>Test` must run with no database
+    and no Docker. Nothing else in the build distinguishes the two, so a misnamed class silently
+    breaks it.
+  - Wire the IT with `@Testcontainers` on the class, a
+    `@Container static PostgreSQLContainer<?>` field, and `@ServiceConnection` on that field so
+    Spring points at the container with no hardcoded URL. The imports are
+    `org.testcontainers.junit.jupiter.Testcontainers`, `org.testcontainers.junit.jupiter.Container`,
+    `org.testcontainers.containers.PostgreSQLContainer` and
+    `org.springframework.boot.testcontainers.service.connection.ServiceConnection`.
+  - A `@DataJpaTest` IT MUST also carry
+    `@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)`. Without it
+    Boot tries to swap the container for an embedded database, which is deliberately not on the
+    classpath, and the context fails to start. That annotation is in
+    `org.springframework.boot.test.autoconfigure.jdbc` - NOT in `...autoconfigure.orm.jpa`,
+    where @DataJpaTest itself lives.
+  - The IT runs against the real `schema.sql` under `ddl-auto=validate`, so it is what proves
+    the entity and the shipped schema still agree. That is its job - do not point it at a
+    Hibernate-generated schema, which would test nothing the entity did not already assert.
+    Note `data.sql` also loads in the IT's context and script initialization is NOT rolled back
+    by the test transaction, so the seed rows ARE present: have each IT assert on its own rows,
+    never on a total row count.
+  - pom: declare `maven-failsafe-plugin` in <build><plugins> BARE - groupId and artifactId only.
+    spring-boot-starter-parent already supplies its version, its integration-test/verify goal
+    bindings, AND a <configuration> setting classesDirectory, which is load-bearing: without it
+    failsafe runs against the repackaged fat jar and finds no tests. Adding your own
+    <configuration> block overrides that and breaks it.
+  - Declare failsafe BEFORE the pitest plugin. Both failsafe's `verify` goal and pitest's
+    `mutationCoverage` bind to the `verify` phase, and Maven runs same-phase goals in declaration
+    order, so this is what makes a broken integration test report in seconds instead of after a
+    full mutation run.
+  - pitest MUST exclude the ITs:
+      <excludedTestClasses><param><base.package>.*IT</param></excludedTestClasses>
+    PIT discovers test classes from the classpath, not from surefire's configuration, so without
+    this it starts a database container per mutant. That is not merely slow: PIT counts a
+    TIMED_OUT mutant as DETECTED, so container-bound tests can inflate the score instead of
+    earning it. One param is enough - PIT compiles a glob `*` to the regex `.*`, which spans the
+    package dots. List NOTHING but the `*IT` pattern here; any other exclusion is a real test
+    quietly dropped from the gate.
+  - This split is also why the Dockerfile below can run `mvn package` with no Docker available:
+    failsafe binds to phases AFTER `package`, so an image build never tries to start a container.
+  - CONSEQUENCE FOR THE MUTATION SCORE: excluded ITs kill no mutants. Anything whose only cover
+    came from a database test - entity accessors especially - now needs a plain unit test that
+    constructs the object directly and asserts every accessor. Check this deliberately: it is the
+    easiest way for a previously-passing service to drop under 80%.
 - SELF-DOCUMENTING ENDPOINTS: the service publishes an OpenAPI (Swagger) description of every
   endpoint it serves, so what it exposes is discoverable by asking the RUNNING SERVICE rather than
   by reading a hand-written document that drifts out of date the first time generation picks a
@@ -219,13 +301,17 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
   - Do NOT write tests asserting the content of `/v3/api-docs` or the Swagger UI. springdoc is a
     library rather than code you emitted, so it is outside the mutation gate; such a test pins the
     library's rendering and breaks on its next upgrade without ever protecting your own logic.
-- A multi-stage `Dockerfile` plus a `.dockerignore`, so the service runs as a container:
+- A multi-stage `Dockerfile` plus a `.dockerignore`, so the service runs as a container. The
+  image holds the SERVICE ONLY - never a database - because it is one service in the compose
+  stack below, alongside PostgreSQL:
   - Build stage `FROM maven:3.9-eclipse-temurin-21`: copy `pom.xml` alone and run
     `mvn -B --no-transfer-progress dependency:go-offline` FIRST, then copy `src` and run
     `mvn -B --no-transfer-progress package`. Splitting it that way keeps the dependency layer
     cached across source edits. Use `package`, not `verify`: pitest is bound to `verify`, and a
     multi-minute mutation run does not belong in every image build. Do NOT pass `-DskipTests` -
-    `package` runs the unit tests and that is intended.
+    `package` runs the unit tests and that is intended. It runs no *IT either, because failsafe
+    binds to phases after `package`; that is what lets the image build succeed with no Docker
+    daemon inside it, and it is why nothing here has to be skipped.
   - Then `RUN mv target/*.jar /build/app.jar` so the runtime stage needs no artifactId/version.
     (`*.jar` matches only the boot jar; spring-boot:repackage leaves the pre-repackage copy as
     `.jar.original`, which the glob does not match.)
@@ -237,6 +323,24 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
     PID 1 so `docker stop` delivers SIGTERM to it and Spring shuts down gracefully.
   - `.dockerignore` must list at least `target/` and `.legacylift/`, or the build context
     carries tens of MB of build output and a host-built jar can leak into the image.
+- A `compose.yaml` next to the Dockerfile, so `docker compose up --build` brings up the database
+  and the service together and the demo needs nothing installed but Docker:
+  - A `db` service on `postgres:16-alpine` - the SAME image tag the ITs use, so tests and the
+    demo run on one engine - with POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD matching the
+    values in application.properties, and a NAMED VOLUME on /var/lib/postgresql/data. Do NOT
+    publish the database port on the host: nothing outside the compose network needs it and 5432
+    is routinely already taken by a locally installed PostgreSQL.
+  - An `app` service with `build: .`, publishing 8080, and `depends_on: db: condition:
+    service_healthy`. Pass SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and
+    SPRING_DATASOURCE_PASSWORD as environment - the URL host is the compose service name (`db`),
+    not localhost. Spring's relaxed binding maps those onto spring.datasource.* and outranks
+    application.properties, which is why the file itself needs no placeholders.
+  - The `db` service needs a `pg_isready` healthcheck with a `start_period`. Bare `depends_on`
+    waits only for the container to START, but the app runs schema.sql, data.sql and Hibernate's
+    validate pass immediately at startup and all three need a database ACCEPTING CONNECTIONS.
+    The `start_period` matters because on a fresh volume initdb runs a temporary server that
+    pg_isready answers, so the first probe can go green before the real server is listening.
+  - Do NOT emit a top-level `version:` key - it is obsolete and Compose warns about it.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
 
@@ -252,7 +356,14 @@ weakening the gate is a WRONG answer and will be rejected automatically. Specifi
 - unbind pitest from the verify phase (remove its <executions>/<phase>verify</phase>/
   mutationCoverage goal) or drop the pitest-junit5-plugin dependency;
 - delete a test, annotate one @Disabled/@Ignore, or narrow/soften an assertion so it stops failing;
-- replace real logic with a stub, or make a method return a constant, to satisfy a test.
+- replace real logic with a stub, or make a method return a constant, to satisfy a test;
+- set any skip or ignore flag: skipPitest, skipTests, skipITs, maven.test.skip, or
+  testFailureIgnore. A skipped gate is not a passed gate;
+- shrink what is measured: do not add <excludedClasses> or <excludedMethods>, and do not narrow
+  <targetClasses>. Removing hard-to-kill code from the denominator raises the score without
+  improving a single test, which is the same lie as lowering the threshold;
+- widen <excludedTestClasses> beyond the `*IT` pattern, or delete the maven-failsafe-plugin.
+  Either one silently drops real tests out of the build.
 Fix the ROOT CAUSE in the code instead. If a test genuinely encodes a wrong expectation, you may
 correct the test - but say so in a one-line comment above it explaining why the expectation was
 wrong, and keep it asserting the real business rule.
@@ -295,6 +406,20 @@ CONSTRAINTS THE ORIGINAL GENERATION HAD TO SATISFY - your fix must not regress t
   the main code to emit what the legacy source emitted.
 - Rule tests must pin exact threshold BOUNDARIES (assert at 99 and 100, at 499 and 500 - not a
   mid-range value) so no changed-conditional-boundary mutation survives.
+- The datastore is PostgreSQL, reached through a Testcontainers container in tests and a compose
+  service at run time. Swapping the driver back to h2 or any other embedded database to clear a
+  connection error is NOT a fix - it is the regression this service was built to avoid. Keep
+  `ddl-auto=validate`; if the entity and `schema.sql` disagree, correct whichever one is wrong
+  rather than letting Hibernate generate the schema.
+- TEST NAMING IS A CONTRACT: `*IT` classes get a database from Testcontainers and are run by
+  failsafe; `*Test` classes run under surefire with no database and no Docker. Never rename an IT
+  to `*Test` or move Testcontainers code into a `*Test` class - it would run with no container,
+  drag Docker into the image build, and land inside the mutation gate. If a `*Test` class needs a
+  database, the mistake is the test, not the naming.
+- A Testcontainers failure that says "Could not find a valid Docker environment", "Can't get
+  Docker image", or "Cannot connect to the Docker daemon" is an ENVIRONMENT problem on the
+  machine running the build, not a defect in the service. There is no source change that fixes
+  it: emit no files and say so in one line.
 - A runtime exception from a service does NOT become a 500 under @WebMvcTest/MockMvc - it
   propagates and the test errors. A test expecting 5xx needs the @RestControllerAdvice +
   @ExceptionHandler that produces it. Do NOT write an @ExceptionHandler for RuntimeException or

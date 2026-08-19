@@ -23,8 +23,13 @@ compile, unit tests green, **80%+ PIT mutation score**.
 
 ## Quick start
 
-**Prerequisites:** Python 3.14, Java 21 (Temurin), Maven 3.9+, and an OpenAI **Platform** API key
-(pay-as-you-go billing — ChatGPT subscription credits do not work here).
+**Prerequisites:** Python 3.14, Java 21 (Temurin), Maven 3.9+, **Docker**, and an OpenAI
+**Platform** API key (pay-as-you-go billing — ChatGPT subscription credits do not work here).
+
+Docker is required by `verify`, not just by the demo: the generated service's `*IT` tests start a
+real PostgreSQL through Testcontainers, so `mvn verify` needs a running daemon. `legacylift
+verify` checks for one up front and tells you to start Docker rather than spending fix attempts
+on it.
 
 Create the virtualenv and install the agent **from the repo root**:
 
@@ -94,15 +99,18 @@ disable the quality gate from outside the process. Those change only by editing 
 
 ## Run the generated service (Docker demo)
 
-The generated service ships its own multi-stage `Dockerfile`, so it runs as a container with no
-JDK, no Maven and no database on your machine — and no manual edits. From the generated service
-directory:
+The generated service ships a multi-stage `Dockerfile` **and** a `compose.yaml`, so it runs as a
+container next to a real PostgreSQL with no JDK, no Maven and no database installed on your
+machine — and no manual edits. From the generated service directory:
 
 ```bash
 cd output/inventory-service
-docker build -t legacylift/inventory-service .
-docker run --rm -p 8080:8080 legacylift/inventory-service
+docker compose up --build
 ```
+
+That brings up `postgres:16-alpine` and the service together, waits for the database to pass a
+`pg_isready` healthcheck before starting the app, and keeps the data in a named volume. The
+service image itself holds no database — it is one service in the stack.
 
 Then, in another terminal:
 
@@ -145,9 +153,14 @@ pitest is bound to — the mutation gate belongs in `legacylift verify` and CI, 
 build. Nothing is skipped to make the image build pass. The runtime stage is a JRE-only Alpine
 image running as a non-root user, with the JVM as PID 1 so `docker stop` shuts Spring down cleanly.
 
-Prefer to run it without Docker? `mvn spring-boot:run` in the same directory works too, and serves
-the identical responses — the in-memory H2 and its `data.sql` seed are part of the generated
-service now, not a manual step.
+Prefer to run the service from source? `docker compose up -d db` starts just the database, and
+`mvn spring-boot:run` in the same directory then serves the identical responses — the datasource,
+`schema.sql` and the `data.sql` seed are part of the generated service now, not a manual step.
+
+> **If startup fails with a Hibernate validation error**, the named volume is holding an older
+> schema: `schema.sql` uses `CREATE TABLE IF NOT EXISTS`, so it will not re-shape a table that
+> already exists, and `spring.jpa.hibernate.ddl-auto=validate` then refuses to start against the
+> stale one. `docker compose down -v` drops the volume and the next `up` rebuilds it.
 
 > Generation is stochastic, so class names and the exact endpoint can vary between runs. If a
 > `curl` above 404s you don't have to grep for the real path — the running service will tell you.
@@ -178,8 +191,12 @@ service now, not a manual step.
   red (manual mutation check).
 - **Runnable service + live curl demo** — see above.
 - **Containerized out of the box** — every generated service ships a multi-stage `Dockerfile`
-  (Maven build stage → JRE-only Alpine runtime, non-root) plus an in-memory datasource and seed,
-  so `docker build && docker run` serves the endpoint with nothing installed but Docker.
+  (Maven build stage → JRE-only Alpine runtime, non-root) plus a `compose.yaml`, so
+  `docker compose up --build` serves the endpoint with nothing installed but Docker.
+- **PostgreSQL, not an in-memory stand-in** — the service runs against a real PostgreSQL as one
+  service in a compose stack, with the schema owned by `schema.sql` and checked at every startup
+  by `ddl-auto=validate`. The database tests are Testcontainers `*IT` classes run by failsafe on
+  the real engine, so entity/schema drift fails the build instead of the demo.
 - **Automated fix loop** — `legacylift verify` takes generated code to verified code unattended:
   classifies the failure (compile / test / mutation), sends a filtered Maven excerpt plus the
   current source back to the agent, applies the fix, re-runs, capped at 3 attempts — with fixes
@@ -187,8 +204,9 @@ service now, not a manual step.
 
 **TO-DOs**
 
-- **Replace H2 with PostgreSQL** — Testcontainers for tests, a real datasource for run
-  (the generated `Dockerfile` becomes one service in a `docker compose` stack).
+- **Regenerate `examples/inventory-service` from the pipeline** — the fixture now conforms to the
+  prompt, but it is hand-maintained, so CI verifies a service the generator has not actually been
+  observed to produce. A clean `generate` run committed as the fixture would close that gap.
 
 ## Why the quality gates matter
 
