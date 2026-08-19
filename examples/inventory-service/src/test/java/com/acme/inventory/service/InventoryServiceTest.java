@@ -9,13 +9,11 @@ import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.when;
 
@@ -30,15 +28,17 @@ class InventoryServiceTest {
         service = new InventoryService(repository);
     }
 
+    /** Unknown SKU is an empty Optional, not an exception - the controller renders the 404. */
     @Test
-    void notFoundYields404() {
+    void unknownSkuYieldsEmpty() {
         when(repository.findBySku(anyString())).thenReturn(Optional.empty());
 
-        Throwable thrown = catchThrowable(() -> service.getInventoryView("NOPE", 0));
+        assertThat(service.getInventoryView("NOPE", 0)).isEmpty();
+    }
 
-        assertThat(thrown)
-                .isInstanceOf(ResponseStatusException.class)
-                .hasMessageContaining("404 NOT_FOUND");
+    /** Unwraps the Optional so each rule test below reads as it did before. */
+    private InventoryView view(String sku, int orderQty) {
+        return service.getInventoryView(sku, orderQty).orElseThrow();
     }
 
     @Test
@@ -46,7 +46,7 @@ class InventoryServiceTest {
         Inventory inv = new Inventory("S1", "Item", 100, 100, new BigDecimal("10.00"));
         when(repository.findBySku("S1")).thenReturn(Optional.of(inv));
 
-        InventoryView view = service.getInventoryView("S1", 0);
+        InventoryView view = view("S1", 0);
 
         assertThat(view.needsReorder()).isTrue();
     }
@@ -56,7 +56,7 @@ class InventoryServiceTest {
         Inventory inv = new Inventory("S2", "Item", 101, 100, new BigDecimal("10.00"));
         when(repository.findBySku("S2")).thenReturn(Optional.of(inv));
 
-        InventoryView view = service.getInventoryView("S2", 0);
+        InventoryView view = view("S2", 0);
 
         assertThat(view.needsReorder()).isFalse();
     }
@@ -67,13 +67,13 @@ class InventoryServiceTest {
         when(repository.findBySku("S3")).thenReturn(Optional.of(inv));
 
         // 99 -> 0%
-        assertThat(service.getInventoryView("S3", 99).unitPrice()).isEqualByComparingTo("100.00");
+        assertThat(view("S3", 99).unitPrice()).isEqualByComparingTo("100.00");
         // 100 -> 5%
-        assertThat(service.getInventoryView("S3", 100).unitPrice()).isEqualByComparingTo("95.00");
+        assertThat(view("S3", 100).unitPrice()).isEqualByComparingTo("95.00");
         // 499 -> 5%
-        assertThat(service.getInventoryView("S3", 499).unitPrice()).isEqualByComparingTo("95.00");
+        assertThat(view("S3", 499).unitPrice()).isEqualByComparingTo("95.00");
         // 500 -> 12%
-        assertThat(service.getInventoryView("S3", 500).unitPrice()).isEqualByComparingTo("88.00");
+        assertThat(view("S3", 500).unitPrice()).isEqualByComparingTo("88.00");
     }
 
     @Test
@@ -81,8 +81,8 @@ class InventoryServiceTest {
         Inventory inv = new Inventory("S4", "Item", 50, 100, new BigDecimal("200.00")); // qty below reorder -> needsReorder
         when(repository.findBySku("S4")).thenReturn(Optional.of(inv));
 
-        assertThat(service.getInventoryView("S4", 100).unitPrice()).isEqualByComparingTo("200.00");
-        assertThat(service.getInventoryView("S4", 500).unitPrice()).isEqualByComparingTo("200.00");
+        assertThat(view("S4", 100).unitPrice()).isEqualByComparingTo("200.00");
+        assertThat(view("S4", 500).unitPrice()).isEqualByComparingTo("200.00");
     }
 
     @Test
@@ -96,7 +96,7 @@ class InventoryServiceTest {
         listAppender.start();
         logger.addAppender(listAppender);
 
-        InventoryView view = service.getInventoryView("NEG", 0);
+        InventoryView view = view("NEG", 0);
 
         assertThat(view.qty()).isEqualTo(0); // clamped
         assertThat(view.needsReorder()).isTrue(); // 0 <= 0

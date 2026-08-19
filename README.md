@@ -204,9 +204,9 @@ Prefer to run the service from source? `docker compose up -d db` starts just the
 
 **TO-DOs**
 
-- **Bring `examples/inventory-service` up to the current prompt** — the committed fixture predates
-  the wire-contract and springdoc hardening, so it still answers JSON on `/api/inventory/{sku}`
-  rather than the ported pipe-delimited contract the prompt now requires.
+- **Regenerate `examples/inventory-service` from the pipeline** — the fixture now conforms to the
+  prompt, but it is hand-maintained, so CI verifies a service the generator has not actually been
+  observed to produce. A clean `generate` run committed as the fixture would close that gap.
 
 ## Why the quality gates matter
 

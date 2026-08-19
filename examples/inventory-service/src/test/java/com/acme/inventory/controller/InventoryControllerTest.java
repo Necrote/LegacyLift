@@ -10,15 +10,14 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataRetrievalFailureException;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
-import static org.springframework.http.HttpStatus.NOT_FOUND;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -32,48 +31,73 @@ class InventoryControllerTest {
     @org.springframework.boot.test.mock.mockito.MockBean
     private InventoryService service;
 
+    /**
+     * Pins the ported wire contract: the exact pipe-delimited body AND its Content-Type. A
+     * mutation that reorders, reformats or re-delimits the fields is killed here rather than
+     * surviving - the mutation gate proves the logic is constrained, not that the bytes on the
+     * wire still match.
+     */
     @Test
-    void success_returnsJson_andDefaultOrderQtyIsZero() throws Exception {
-        when(service.getInventoryView(anyString(), anyInt()))
-                .thenReturn(new InventoryView("SKU1", "Name", 10, false, new BigDecimal("95.00")));
+    void success_returnsLegacyPipeDelimitedLine_asTextPlain() throws Exception {
+        when(service.getInventoryView(anyString(), anyInt())).thenReturn(
+                Optional.of(new InventoryView("SKU-1", "Widget", 200, false, new BigDecimal("88.00"))));
 
-        var result = mockMvc.perform(get("/api/inventory/SKU1"))
+        mockMvc.perform(get("/api/inventory?sku=SKU-1&orderQty=500"))
                 .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.sku").value("SKU1"))
-                .andExpect(jsonPath("$.name").value("Name"))
-                .andExpect(jsonPath("$.qty").value(10))
-                .andExpect(jsonPath("$.needsReorder").value(false))
-                // Ensure two-decimal formatting is preserved in JSON number
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("\"unitPrice\":95.00")))
-                .andReturn();
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andExpect(content().string("SKU-1|Widget|200|false|88.00"));
+    }
 
-        ArgumentCaptor<Integer> qtyCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(service).getInventoryView(eq("SKU1"), qtyCaptor.capture());
-        assertThat(qtyCaptor.getValue()).isEqualTo(0);
+    @Test
+    void reorderFlaggedSku_rendersTrueAndTheUndiscountedPrice() throws Exception {
+        when(service.getInventoryView(anyString(), anyInt())).thenReturn(
+                Optional.of(new InventoryView("SKU-2", "Gadget", 5, true, new BigDecimal("100.00"))));
+
+        mockMvc.perform(get("/api/inventory?sku=SKU-2&orderQty=500"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("SKU-2|Gadget|5|true|100.00"));
+    }
+
+    @Test
+    void orderQtyDefaultsToZeroWhenAbsent() throws Exception {
+        when(service.getInventoryView(anyString(), anyInt())).thenReturn(
+                Optional.of(new InventoryView("SKU-1", "Widget", 200, false, new BigDecimal("100.00"))));
+
+        mockMvc.perform(get("/api/inventory?sku=SKU-1")).andExpect(status().isOk());
+
+        ArgumentCaptor<Integer> qty = ArgumentCaptor.forClass(Integer.class);
+        verify(service).getInventoryView(eq("SKU-1"), qty.capture());
+        assertThat(qty.getValue()).isEqualTo(0);
+    }
+
+    @Test
+    void unknownSku_is404WithTheLegacyBody() throws Exception {
+        when(service.getInventoryView(anyString(), anyInt())).thenReturn(Optional.empty());
+
+        mockMvc.perform(get("/api/inventory?sku=MISSING"))
+                .andExpect(status().isNotFound())
+                .andExpect(content().string("NOT FOUND"));
     }
 
     @Test
     void negativeOrderQty_isBadRequest400() throws Exception {
-        mockMvc.perform(get("/api/inventory/SKU1?orderQty=-1"))
+        mockMvc.perform(get("/api/inventory?sku=SKU-1&orderQty=-1"))
                 .andExpect(status().isBadRequest());
         verifyNoInteractions(service);
     }
 
     @Test
     void nonNumericOrderQty_isBadRequest400() throws Exception {
-        mockMvc.perform(get("/api/inventory/SKU1?orderQty=abc"))
+        mockMvc.perform(get("/api/inventory?sku=SKU-1&orderQty=abc"))
                 .andExpect(status().isBadRequest());
         verifyNoInteractions(service);
     }
 
     @Test
-    void notFound_fromServiceMapsTo404() throws Exception {
-        when(service.getInventoryView(anyString(), anyInt()))
-                .thenThrow(new ResponseStatusException(NOT_FOUND, "NOT FOUND"));
-
-        mockMvc.perform(get("/api/inventory/MISSING"))
-                .andExpect(status().isNotFound());
+    void missingSku_isBadRequest400() throws Exception {
+        mockMvc.perform(get("/api/inventory"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(service);
     }
 
     @Test
@@ -81,7 +105,7 @@ class InventoryControllerTest {
         when(service.getInventoryView(anyString(), anyInt()))
                 .thenThrow(new DataRetrievalFailureException("boom"));
 
-        mockMvc.perform(get("/api/inventory/SKU1"))
+        mockMvc.perform(get("/api/inventory?sku=SKU-1"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(content().string("DB ERROR"));
     }

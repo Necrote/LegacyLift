@@ -32,6 +32,18 @@
     </dependency>
 
     <!--
+      Compile scope, not runtime: the swagger annotations on the controller and the application
+      class are compiled against it. It is third-party, so spring-boot-starter-parent does NOT
+      manage its version and an explicit one is required - 2.6.0 pairs with Boot 3.3.x.
+      It needs no other wiring: /v3/api-docs and /swagger-ui.html are served at their defaults.
+    -->
+    <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.6.0</version>
+    </dependency>
+
+    <!--
       Runtime, not test: a test-scoped driver is absent from the packaged jar and the app
       dies at startup with "Failed to configure a DataSource". Runtime scope is on the test
       classpath too, so the integration tests below still see it.

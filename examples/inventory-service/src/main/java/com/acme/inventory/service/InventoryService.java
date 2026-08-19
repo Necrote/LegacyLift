@@ -5,12 +5,10 @@ import com.acme.inventory.repository.InventoryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-
-import static org.springframework.http.HttpStatus.NOT_FOUND;
+import java.util.Optional;
 
 @Service
 public class InventoryService {
@@ -23,10 +21,17 @@ public class InventoryService {
         this.repository = repository;
     }
 
-    public InventoryView getInventoryView(String sku, int orderQty) {
-        Inventory inv = repository.findBySku(sku)
-                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "NOT FOUND"));
+    /**
+     * Empty when the SKU is unknown. Deliberately NOT a ResponseStatusException: the legacy
+     * servlet answered a missing row with `resp.setStatus(404); out.print("NOT FOUND")`, and a
+     * thrown ResponseStatusException would render Spring's JSON error object instead of that
+     * exact body. The controller turns the empty case into the legacy 404.
+     */
+    public Optional<InventoryView> getInventoryView(String sku, int orderQty) {
+        return repository.findBySku(sku).map(inv -> toView(inv, sku, orderQty));
+    }
 
+    private InventoryView toView(Inventory inv, String sku, int orderQty) {
         int qty = inv.getQty();
         if (qty < 0) {
             qty = 0;
