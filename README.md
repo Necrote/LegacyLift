@@ -207,6 +207,23 @@ Prefer to run the service from source? `docker compose up -d db` starts just the
 - **Regenerate `examples/inventory-service` from the pipeline** — the fixture now conforms to the
   prompt, but it is hand-maintained, so CI verifies a service the generator has not actually been
   observed to produce. A clean `generate` run committed as the fixture would close that gap.
+- **Run the generated service on Kubernetes (kind)** — deploy the image with a plain manifest
+  first, so the moving parts stay visible before a chart hides them. Done when `kubectl
+  port-forward` + `curl` answers from inside the cluster.
+- **Generate the Helm chart** — it belongs in `GENERATE_SYSTEM` beside the `Dockerfile` and
+  `compose.yaml`: the agent should ship deployable services, not output a human then deploys.
+  Self-contained PostgreSQL, actuator probes, one replica. Done when `helm install` serves the
+  endpoint.
+- **Verify what `mvn verify` cannot see** — nothing checks `compose.yaml` today, and the chart
+  will have the same hole: the gate is green whether or not the service can actually deploy. Add
+  `docker compose config` and `helm lint` to `legacylift verify`. Done when a broken chart fails
+  the gate.
+- **Architecture diagram + demo GIF** — a Mermaid diagram of `analyze → generate → verify`, plus
+  an asciinema recording of a real pipeline run. Done when the README shows the pipeline instead
+  of describing it.
+- **Limitations & design decisions** — context-window truncation, what is hand-maintained versus
+  generated, why mutation score rather than line coverage, the 3-attempt cap. Done when a senior
+  engineer trusts the repo because of what it admits, not despite it.
 
 ## Why the quality gates matter
 
