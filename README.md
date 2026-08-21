@@ -176,6 +176,82 @@ Prefer to run the service from source? `docker compose up -d db` starts just the
 > curl -s http://localhost:8080/v3/api-docs.yaml
 > ```
 
+## Run it on Kubernetes (kind)
+
+The same image runs unchanged on a real cluster. `examples/inventory-service/k8s/` holds plain
+manifests — a Secret, PostgreSQL with a PVC, and the service — deliberately *before* a Helm chart,
+so the moving parts stay visible.
+
+**Prerequisites:** Docker (already needed above), plus `kubectl` and `kind`. Docker Desktop ships
+`kubectl`; `kind` is a single binary needing no installer and no admin rights:
+
+```powershell
+# Windows
+curl.exe -sL -o "$HOME\bin\kind.exe" https://kind.sigs.k8s.io/dl/v0.32.0/kind-windows-amd64
+```
+
+```bash
+# macOS / Linux
+curl -sLo ~/bin/kind "https://kind.sigs.k8s.io/dl/v0.32.0/kind-$(uname -s | tr A-Z a-z)-amd64"
+chmod +x ~/bin/kind
+```
+
+> **On Windows, put that directory on the PATH *Windows* knows about**, not just the one your
+> shell invents. Git Bash prepends `~/bin` on its own, so `kind` can work there and still fail in
+> PowerShell with `The term 'kind' is not recognized`. Add it under *Edit environment variables
+> for your account*, or:
+>
+> ```powershell
+> [Environment]::SetEnvironmentVariable('Path',
+>   [Environment]::GetEnvironmentVariable('Path','User') + ";$HOME\bin", 'User')
+> ```
+>
+> Then open a **new** terminal — a running shell keeps the PATH it was started with, and so does
+> anything it launches.
+
+```bash
+kind create cluster --name legacylift
+cd examples/inventory-service
+
+docker build -t legacylift/inventory-service:1.0.0 .
+kind load docker-image legacylift/inventory-service:1.0.0 --name legacylift   # see below
+kubectl apply -f k8s/
+kubectl rollout status deploy/inventory-service
+```
+
+Then open a port to it — `port-forward` runs in the foreground and holds the terminal:
+
+```bash
+kubectl port-forward svc/inventory-service 18080:8080
+```
+
+and, **in another terminal**:
+
+```bash
+curl.exe "http://localhost:18080/api/inventory?sku=SKU-1&orderQty=500"   # SKU-1|Widget|200|false|88.00
+curl.exe "http://localhost:18080/api/inventory?sku=SKU-2&orderQty=500"   # SKU-2|Gadget|5|true|100.00
+```
+
+**`kind load` is not optional.** kind runs its own containerd, which cannot see images in your
+local Docker daemon. Skip that step and every pod sits in `ErrImagePull` against Docker Hub,
+looking for an image that was never pushed anywhere. (If `kind load` fails with
+`ctr: content digest ... not found`, that is Docker Desktop's containerd snapshotter clashing on a
+multi-arch manifest — it affects upstream images like `postgres:16-alpine`, which the kubelet will
+happily pull itself, not the locally-built one you actually need to load.)
+
+Three things the manifests do that compose gets for free:
+
+- **`initContainers` waits for PostgreSQL.** Kubernetes has no `depends_on: service_healthy`, so
+  without it the app crash-loops until the database accepts connections — it converges, but the
+  failure reads like a broken image rather than a dependency still starting.
+- **One replica.** `spring.sql.init.mode=always` re-runs `schema.sql` at every startup, so N
+  replicas race on `CREATE TABLE IF NOT EXISTS`. Scaling out needs the schema moved into a
+  migration Job first.
+- **TCP probes, not `httpGet`.** The service ships no actuator yet, and its only HTTP endpoint is
+  the business one — where a 404 for an unknown SKU is a *correct* answer, not an unhealthy pod.
+
+Tear down with `kind delete cluster --name legacylift`.
+
 ## Roadmap
 
 **Done ✅**
@@ -197,6 +273,9 @@ Prefer to run the service from source? `docker compose up -d db` starts just the
   service in a compose stack, with the schema owned by `schema.sql` and checked at every startup
   by `ddl-auto=validate`. The database tests are Testcontainers `*IT` classes run by failsafe on
   the real engine, so entity/schema drift fails the build instead of the demo.
+- **Runs on Kubernetes** — the same image deploys to a kind cluster from plain manifests in
+  `examples/inventory-service/k8s/` (Secret, PostgreSQL on a PVC, initContainer gate), serving the
+  identical contract through `kubectl port-forward` — see above.
 - **Automated fix loop** — `legacylift verify` takes generated code to verified code unattended:
   classifies the failure (compile / test / mutation), sends a filtered Maven excerpt plus the
   current source back to the agent, applies the fix, re-runs, capped at 3 attempts — with fixes
@@ -207,13 +286,11 @@ Prefer to run the service from source? `docker compose up -d db` starts just the
 - **Regenerate `examples/inventory-service` from the pipeline** — the fixture now conforms to the
   prompt, but it is hand-maintained, so CI verifies a service the generator has not actually been
   observed to produce. A clean `generate` run committed as the fixture would close that gap.
-- **Run the generated service on Kubernetes (kind)** — deploy the image with a plain manifest
-  first, so the moving parts stay visible before a chart hides them. Done when `kubectl
-  port-forward` + `curl` answers from inside the cluster.
-- **Generate the Helm chart** — it belongs in `GENERATE_SYSTEM` beside the `Dockerfile` and
-  `compose.yaml`: the agent should ship deployable services, not output a human then deploys.
-  Self-contained PostgreSQL, actuator probes, one replica. Done when `helm install` serves the
-  endpoint.
+- **Generate the Helm chart** — templatise `k8s/` into a chart and move it into `GENERATE_SYSTEM`
+  beside the `Dockerfile` and `compose.yaml`: the agent should ship deployable services, not
+  output a human then deploys. Done when `helm install` serves the endpoint.
+- **Actuator health probes** — the manifests use TCP probes because the service has no
+  `/actuator/health`; a real readiness check needs `spring-boot-starter-actuator` in the prompt.
 - **Verify what `mvn verify` cannot see** — nothing checks `compose.yaml` today, and the chart
   will have the same hole: the gate is green whether or not the service can actually deploy. Add
   `docker compose config` and `helm lint` to `legacylift verify`. Done when a broken chart fails

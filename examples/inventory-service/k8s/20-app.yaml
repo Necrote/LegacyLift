@@ -1,0 +1,85 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-service
+spec:
+  # ONE replica, on purpose. `spring.sql.init.mode=always` runs schema.sql and data.sql at every
+  # startup, so N replicas race on CREATE TABLE IF NOT EXISTS - which PostgreSQL can fail with a
+  # duplicate-key error on its internal catalogs even though the statement is written to be
+  # idempotent. Scaling out needs the schema moved to a migration Job (or Flyway) first.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-service
+  template:
+    metadata:
+      labels:
+        app: inventory-service
+    spec:
+      # Kubernetes has no equivalent of compose's `depends_on: condition: service_healthy`.
+      # Without this the app would crash-loop until PostgreSQL accepts connections - it would
+      # converge eventually, but the failure would look like a broken image rather than a
+      # dependency that is still starting.
+      initContainers:
+        - name: wait-for-db
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - until pg_isready -h inventory-db -p 5432 -U "$POSTGRES_USER"; do
+              echo "waiting for inventory-db"; sleep 2; done
+          envFrom:
+            - secretRef:
+                name: inventory-db
+      containers:
+        - name: app
+          image: legacylift/inventory-service:1.0.0
+          # The image is built locally and pushed to no registry; it reaches the node through
+          # `kind load docker-image`. Always would make the kubelet try Docker Hub and fail
+          # with ErrImagePull.
+          imagePullPolicy: IfNotPresent
+          env:
+            # `inventory-db` is the Service name, resolved by cluster DNS - the same trick
+            # compose.yaml plays with its service name, one layer up.
+            - name: SPRING_DATASOURCE_URL
+              value: jdbc:postgresql://inventory-db:5432/inventory
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: inventory-db
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: inventory-db
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 8080
+              name: http
+          # TCP probes, not httpGet: the service ships no actuator yet, and the only HTTP
+          # endpoint it has is the business one - where a 404 for an unknown SKU is a correct
+          # response, not an unhealthy service. Adding spring-boot-starter-actuator and
+          # probing /actuator/health is the follow-up (see the README roadmap).
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-service
+spec:
+  selector:
+    app: inventory-service
+  ports:
+    - port: 8080
+      targetPort: http
+  type: ClusterIP

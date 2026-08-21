@@ -1,0 +1,77 @@
+# PostgreSQL as its own workload, the same postgres:16-alpine the Testcontainers *IT classes
+# and compose.yaml use - one engine across tests, local run and cluster.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: inventory-db
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+  # No storageClassName: kind installs `standard` (rancher.io/local-path) as the default.
+  # It is WaitForFirstConsumer, so the volume is not provisioned until the pod is scheduled.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory-db
+  strategy:
+    # The PVC is ReadWriteOnce, so a rolling update would deadlock: the new pod cannot mount
+    # the volume until the old one releases it, and the old one is not torn down until the
+    # new one is ready. Recreate is the correct strategy for a single-writer database.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: inventory-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          envFrom:
+            - secretRef:
+                name: inventory-db
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              # initdb refuses a data directory that is not empty, and a freshly provisioned
+              # volume can carry filesystem metadata. A subPath gives it a clean subdirectory.
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: inventory-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory-db
+spec:
+  selector:
+    app: inventory-db
+  ports:
+    - port: 5432
+      targetPort: postgres
+  # ClusterIP: nothing outside the cluster needs the database, and not publishing it is the
+  # Kubernetes equivalent of compose.yaml declining to map 5432 onto the host.
+  type: ClusterIP
