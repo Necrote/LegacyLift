@@ -30,6 +30,17 @@
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-jpa</artifactId>
     </dependency>
+    <!--
+      Publishes /actuator/health so Kubernetes has something real to probe. Without it the only
+      HTTP endpoint is the business one, where a 404 for an unknown SKU is a CORRECT answer -
+      so an httpGet probe against it would report a healthy pod as sick, or a database-less pod
+      as fine. Boot manages the version, and PIT only mutates com.acme.inventory.* out of
+      target/classes, so a library adds no mutants and cannot move the score.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
 
     <!--
       Compile scope, not runtime: the swagger annotations on the controller and the application
