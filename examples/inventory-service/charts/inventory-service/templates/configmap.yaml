@@ -1,0 +1,13 @@
+# Non-secret application config. The JDBC URL is not a credential, so it lives here rather than
+# in the Secret - which also makes `kubectl get configmap -o yaml` a useful way to see where a
+# release is pointed without decoding anything.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "inventory-service.name" . }}
+  labels:
+    {{- include "inventory-service.labels" . | nindent 4 }}
+data:
+  # The host is the PostgreSQL Service name, resolved by cluster DNS - the same trick
+  # compose.yaml plays with its service name, one layer up.
+  SPRING_DATASOURCE_URL: jdbc:postgresql://{{ include "inventory-service.dbName" . }}:5432/{{ .Values.postgres.database }}

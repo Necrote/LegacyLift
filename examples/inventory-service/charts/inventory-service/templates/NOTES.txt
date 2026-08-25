@@ -1,0 +1,15 @@
+{{ .Chart.Name }} is installed as release {{ .Release.Name }}.
+
+The Service is ClusterIP, so reach it with a port-forward:
+
+  kubectl port-forward svc/{{ include "inventory-service.name" . }} 18080:{{ .Values.service.port }}
+
+and, in another terminal:
+
+  curl "http://localhost:18080/api/inventory?sku=SKU-1&orderQty=500"   # SKU-1|Widget|200|false|88.00
+  curl "http://localhost:18080/api/inventory?sku=SKU-2&orderQty=500"   # SKU-2|Gadget|5|true|100.00
+
+The image is not pulled from a registry. On kind, load it into the node first, or the pods
+sit in ErrImagePull:
+
+  kind load docker-image {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
