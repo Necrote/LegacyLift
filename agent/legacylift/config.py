@@ -56,7 +56,10 @@ def _names(name: str, default: frozenset[str]) -> frozenset[str]:
 # MODEL is the OpenAI chat model every stage runs on; MAX_TOKENS caps one reply. A full
 # service generation is the largest reply, so lowering MAX_TOKENS truncates generate first.
 MODEL = _str("MODEL", "gpt-5")
-MAX_TOKENS = _int("MAX_TOKENS", 20_000)
+# A full generation is now ~25 files - service + tests + Dockerfile + compose.yaml + an eight
+# file Helm chart - and a truncated reply is the first symptom of this being too low: the last
+# file arrives half-written and the build fails on something that looks like a model error.
+MAX_TOKENS = _int("MAX_TOKENS", 32_000)
 
 # --- TUNABLE: pipeline defaults (each is also a CLI flag) --------------------------------
 # Relative to the current directory: analyze writes PLAN_FILE, generate reads it back, so
