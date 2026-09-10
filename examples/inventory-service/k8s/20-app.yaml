@@ -57,17 +57,21 @@ spec:
           ports:
             - containerPort: 8080
               name: http
-          # TCP probes, not httpGet: the service ships no actuator yet, and the only HTTP
-          # endpoint it has is the business one - where a 404 for an unknown SKU is a correct
-          # response, not an unhealthy service. Adding spring-boot-starter-actuator and
-          # probing /actuator/health is the follow-up (see the README roadmap).
+          # Readiness includes the datasource (see application.properties - the `db` indicator is
+          # NOT in Spring's default readiness group, so it had to be added), which means a pod
+          # that cannot reach PostgreSQL leaves the Service and stops receiving traffic instead
+          # of answering every request with 500. Liveness deliberately excludes it: liveness
+          # failure restarts the container, so a database outage would restart-loop an
+          # application that is not broken.
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /actuator/health/readiness
               port: http
             initialDelaySeconds: 10
             periodSeconds: 5
           livenessProbe:
-            tcpSocket:
+            httpGet:
+              path: /actuator/health/liveness
               port: http
             initialDelaySeconds: 30
             periodSeconds: 10

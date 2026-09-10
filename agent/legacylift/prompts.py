@@ -69,6 +69,9 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
     `jdbc:mysql://...` URL describes where the data lives TODAY, not the modernization target;
     port the SQL and the schema, not the driver. Never emit mysql-connector-j, ojdbc, or an
     embedded database (h2, hsqldb, derby) - see "A REAL DATABASE" below for why.
+  - `spring-boot-starter-actuator`, which publishes `/actuator/health` for the Kubernetes probes
+    in the Helm chart below. It is a library, so PIT does not mutate it and it cannot move the
+    mutation score. Boot manages its version - do not pin it.
   - Tests get a real PostgreSQL from Testcontainers, so also add, all at `test` scope:
     `org.springframework.boot:spring-boot-testcontainers`, `org.testcontainers:postgresql` and
     `org.testcontainers:junit-jupiter`. See INTEGRATION TESTS below.
@@ -184,11 +187,21 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
       spring.datasource.password=<password>
       spring.jpa.hibernate.ddl-auto=validate
       spring.sql.init.mode=always
+      management.endpoint.health.probes.enabled=true
+      management.endpoint.health.group.readiness.include=readinessState,db
+      management.endpoint.health.group.liveness.include=livenessState
     Write those as PLAIN VALUES matching the compose file below. Do NOT wrap them in
     `${SPRING_DATASOURCE_URL:...}` placeholders: Spring's relaxed binding already maps the
     environment variable SPRING_DATASOURCE_URL onto spring.datasource.url at higher precedence
     than this file, so a placeholder only restates what the framework does. Do NOT set
     `spring.datasource.driverClassName` either - it is derived from the URL.
+    - The three `management.*` lines are what make the chart's probes mean anything, and the
+      last two are NOT defaults. Spring's readiness group ships containing only
+      `readinessState`, so without `db` a pod whose database has vanished still reports UP,
+      stays in the Service, and answers every request with a 500. Equally, `db` must NOT appear
+      in the liveness group: liveness failure RESTARTS the container, so a database outage
+      would restart-loop an application that is not broken. Readiness gates traffic, liveness
+      gates restarts.
     - `ddl-auto=validate`, never `create-drop` or `update`: the schema is owned by schema.sql
       (in a real deployment, by a migration tool), so Hibernate only checks that the entity
       matches it and never silently rewrites a table.
@@ -341,6 +354,41 @@ and the original legacy source, generate a complete Spring Boot 3 / Java 21 Mave
     The `start_period` matters because on a fresh volume initdb runs a temporary server that
     pg_isready answers, so the first probe can go green before the real server is listening.
   - Do NOT emit a top-level `version:` key - it is obsolete and Compose warns about it.
+- A Helm chart under `charts/<artifactId>/`, so the service deploys to Kubernetes as something
+  the generator produced rather than something a human has to write afterwards. Emit
+  `Chart.yaml`, `values.yaml`, and templates for the app Deployment, the app Service, a
+  ConfigMap, a Secret, PostgreSQL, plus `_helpers.tpl` and `NOTES.txt`:
+  - PostgreSQL is DEFINED IN THIS CHART - a PVC, a Deployment and a ClusterIP Service - never a
+    subchart dependency on someone else's PostgreSQL chart. A dependency needs
+    `helm dependency update`, a `Chart.lock`, and a registry that keeps working; defining it
+    here keeps `helm install` hermetic and offline. Use the SAME image tag as the
+    Testcontainers ITs and compose.yaml, so one engine covers tests, local run and cluster.
+  - Give the database Deployment `strategy: type: Recreate`. Its PVC is ReadWriteOnce, so a
+    rolling update deadlocks: the new pod cannot mount the volume until the old one releases
+    it, and the old one is not removed until the new one is ready.
+  - `replicaCount` defaults to **1**, with a comment saying why: `spring.sql.init.mode=always`
+    re-runs schema.sql at every startup, so N replicas race on `CREATE TABLE IF NOT EXISTS`,
+    which PostgreSQL can fail on its internal catalogs even though the statement reads as
+    idempotent. Say that raising it alone is not safe.
+  - The app's probes are `httpGet` on `/actuator/health/readiness` and
+    `/actuator/health/liveness`. Do NOT probe the business endpoint: a 404 for an unknown key
+    is a CORRECT response there, so it reports a healthy pod as sick and a database-less pod as
+    fine. A `tcpSocket` probe is barely better - it only proves the port is open.
+  - Credentials in the Secret, the JDBC URL in the ConfigMap. The URL is not a credential, and
+    splitting them means `kubectl get configmap -o yaml` shows where a release points without
+    decoding anything. The app reads both as environment variables named `SPRING_DATASOURCE_*`,
+    which Spring's relaxed binding maps onto spring.datasource.* at higher precedence than
+    application.properties - the same mechanism compose.yaml uses.
+  - Support an `existingSecret` value that suppresses the generated Secret, so a real
+    deployment can manage credentials outside the chart.
+  - An `initContainer` on the app that blocks until PostgreSQL accepts connections. Kubernetes
+    has no equivalent of compose's `depends_on: condition: service_healthy`; without it the app
+    crash-loops until the database is up, which converges but reads like a broken image.
+  - Name every resource from the release (`{{ .Release.Name }}-...`, via a helper in
+    `_helpers.tpl`) so two installs in one namespace do not collide, and put a
+    `checksum/config` annotation on the app pod template so a `helm upgrade` that only changes
+    the ConfigMap actually rolls the pods instead of silently reporting success.
+  - `helm lint` and `helm template` must both pass on what you emit.
 
 Output each file as: ===FILE: <relative/path>=== followed by its content."""
 
@@ -411,6 +459,11 @@ CONSTRAINTS THE ORIGINAL GENERATION HAD TO SATISFY - your fix must not regress t
   connection error is NOT a fix - it is the regression this service was built to avoid. Keep
   `ddl-auto=validate`; if the entity and `schema.sql` disagree, correct whichever one is wrong
   rather than letting Hibernate generate the schema.
+- The service is deployable, not just runnable: keep the Helm chart under `charts/` in step with
+  any change you make. If you rename a property, change a port, or alter the datasource, the
+  chart's ConfigMap, Secret and probes have to follow. Never "fix" a failure by deleting the
+  chart, dropping spring-boot-starter-actuator, or pointing the probes at the business endpoint;
+  and never move `db` into the liveness group, which turns a database outage into a restart loop.
 - TEST NAMING IS A CONTRACT: `*IT` classes get a database from Testcontainers and are run by
   failsafe; `*Test` classes run under surefire with no database and no Docker. Never rename an IT
   to `*Test` or move Testcontainers code into a `*Test` class - it would run with no container,

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: inventory-service
+description: Spring Boot 3 / Java 21 modernization of legacy InventoryServlet, with PostgreSQL
+type: application
+# version  - the chart's own version; appVersion - the image tag it defaults to.
+version: 1.0.0
+appVersion: "1.0.0"

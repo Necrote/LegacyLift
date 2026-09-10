@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inventory-service.name" . }}
+  labels:
+    {{- include "inventory-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "inventory-service.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "inventory-service.name" . }}
+        {{- include "inventory-service.labels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the config changes. Without this a `helm upgrade` that only edits
+        # the ConfigMap leaves the old pods running with the old values and reports success.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- if .Values.postgres.enabled }}
+      # Kubernetes has no equivalent of compose's `depends_on: condition: service_healthy`.
+      # Without this the app crash-loops until PostgreSQL accepts connections - it converges,
+      # but the failure reads like a broken image rather than a dependency still starting.
+      initContainers:
+        - name: wait-for-db
+          image: {{ .Values.postgres.image }}
+          command:
+            - sh
+            - -c
+            - until pg_isready -h {{ include "inventory-service.dbName" . }} -p 5432 -U "$POSTGRES_USER"; do
+              echo "waiting for {{ include "inventory-service.dbName" . }}"; sleep 2; done
+          envFrom:
+            - secretRef:
+                name: {{ include "inventory-service.secretName" . }}
+      {{- end }}
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "inventory-service.name" . }}
+          env:
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inventory-service.secretName" . }}
+                  key: POSTGRES_USER
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "inventory-service.secretName" . }}
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 8080
+              name: http
+          # Real health checks, not a TCP port test: readiness includes the datasource, so a pod
+          # that cannot reach PostgreSQL leaves the Service and stops receiving traffic instead
+          # of answering every request with 500. Liveness stays separate, so a transient
+          # database outage does not restart an app that was never broken.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

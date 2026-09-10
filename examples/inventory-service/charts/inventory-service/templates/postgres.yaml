@@ -1,0 +1,82 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "inventory-service.dbName" . }}
+  labels:
+    {{- include "inventory-service.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+  # No storageClassName: use whatever the cluster defaults to (kind installs `standard`).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "inventory-service.dbName" . }}
+  labels:
+    {{- include "inventory-service.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "inventory-service.dbName" . }}
+  strategy:
+    # The PVC is ReadWriteOnce, so a rolling update deadlocks: the new pod cannot mount the
+    # volume until the old one releases it, and the old one is not removed until the new one is
+    # ready. Recreate is the correct strategy for a single-writer database.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: {{ include "inventory-service.dbName" . }}
+        {{- include "inventory-service.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          envFrom:
+            - secretRef:
+                name: {{ include "inventory-service.secretName" . }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              # initdb refuses a non-empty data directory, and a freshly provisioned volume can
+              # carry filesystem metadata. A subPath gives it a clean subdirectory.
+              subPath: pgdata
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "inventory-service.dbName" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "inventory-service.dbName" . }}
+  labels:
+    {{- include "inventory-service.labels" . | nindent 4 }}
+spec:
+  # ClusterIP: nothing outside the cluster needs the database. The Kubernetes equivalent of
+  # compose.yaml declining to publish 5432 on the host.
+  type: ClusterIP
+  selector:
+    app: {{ include "inventory-service.dbName" . }}
+  ports:
+    - port: 5432
+      targetPort: postgres
+{{- end }}

@@ -1,0 +1,38 @@
+image:
+  repository: legacylift/inventory-service
+  # Empty means "use the chart's appVersion", so the tag is stated in one place.
+  tag: ""
+  # The image is built locally and pushed to no registry - on kind it arrives via
+  # `kind load docker-image`. Always would send the kubelet to Docker Hub for an image that
+  # was never published, and every pod would sit in ErrImagePull.
+  pullPolicy: IfNotPresent
+
+# ONE replica, on purpose. spring.sql.init.mode=always re-runs schema.sql at every startup, so
+# N replicas race on CREATE TABLE IF NOT EXISTS - which PostgreSQL can fail on its internal
+# catalogs even though the statement reads as idempotent. Scaling out needs the schema moved
+# into a migration Job (or Flyway) first; raising this alone is not safe.
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources: {}
+
+# PostgreSQL is part of this chart rather than a Bitnami subchart dependency: no
+# `helm dependency update`, no Chart.lock, nothing to re-resolve from a registry whose hosting
+# terms keep moving. The chart installs offline against a cluster that already has the images.
+postgres:
+  enabled: true
+  # The same tag the Testcontainers *IT classes and compose.yaml use - one engine everywhere.
+  image: postgres:16-alpine
+  database: inventory
+  username: inventory
+  # Demo default. A real deployment supplies its own, or points existingSecret at one it
+  # manages; this value only ever reaches the generated Secret.
+  password: inventory
+  storage: 1Gi
+
+# Set to the name of a Secret you manage to stop the chart creating one. It must carry the
+# same keys: POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD.
+existingSecret: ""
